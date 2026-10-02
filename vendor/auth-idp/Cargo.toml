@@ -1,0 +1,37 @@
+[package]
+name = "auth-idp"
+version = "0.4.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "IdP-side authentication protocol primitives: OIDC and SAML."
+publish = false
+
+[lib]
+name = "auth_idp"
+path = "src/lib.rs"
+
+[dependencies]
+aws-lc-rs = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+flate2 = "1"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
+rand = "0.9"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-native-certs", "rustls", "json", "form", "http2", "stream"] }
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+url = "2"
+urlencoding = "2"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+x509-parser = "0.16"
+zeroize = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
+tokio = { version = "1", features = ["macros", "rt"] }

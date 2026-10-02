@@ -1,0 +1,517 @@
+/*
+ * sekisho-webui.css — admin console styling layered on top of Pico.
+ *
+ * Pico gives us decent defaults; we override the places where its
+ * opinionated choices are too "marketing site" for an admin console.
+ * The aim is information density without austerity — readable,
+ * deliberate, monospace-respecting.
+ */
+
+:root {
+  --sw-bg: #f7f5ef;
+  --sw-surface: #ffffff;
+  --sw-border: #e3e0d6;
+  --sw-border-strong: #cfccbf;
+  --sw-text: #1f1f1f;
+  --sw-muted: #6e6b5e;
+  --sw-accent: #2f5dd6;
+  --sw-accent-ink: #ffffff;
+  --sw-danger: #b3261e;
+  --sw-enabled: #0a7a4a;
+  --sw-enabled-bg: #dff3e8;
+  --sw-disabled: #7c766b;
+  --sw-disabled-bg: #ece9df;
+  --sw-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --pico-spacing: 0.85rem;
+}
+
+html { font-size: 15px; }
+
+body {
+  background: var(--sw-bg);
+  color: var(--sw-text);
+  font-feature-settings: "ss01", "cv11";
+}
+
+main.container {
+  max-width: 1100px;
+  padding-top: 0.75rem;
+  padding-bottom: 3rem;
+}
+
+/* ─────────────────────────── Nav bar ─────────────────────────── */
+
+body > main > nav:first-of-type {
+  border-bottom: 1px solid var(--sw-border);
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.25rem;
+}
+
+nav ul { align-items: center; flex-wrap: nowrap; }
+/* Menu link labels are short proper nouns ("Identity Providers",
+ * "API Keys") — never wrap them across two lines. nowrap keeps the
+ * header a single tidy row even on narrower viewports, letting the
+ * horizontal scrollbar handle overflow rather than the label. */
+nav ul li a { white-space: nowrap; }
+/* Stack "signed in as" above the email so the cell stays narrow
+ * rather than letting a long email balloon the right column.
+ * inline-block makes the small shrink to the wider child (the
+ * email), and text-align:left inside it pins the label to the
+ * email's left edge instead of floating out to the right. */
+nav .signed-in-as small {
+  display: inline-block;
+  text-align: left;
+  line-height: 1.2;
+}
+nav strong a { color: var(--sw-text); text-decoration: none; letter-spacing: -0.01em; }
+nav .brand { display: inline-flex; align-items: center; gap: 0.4rem; }
+/* The wordmark SVG is authored with `color="currentColor"` and
+ * internal <text> uses `fill="currentColor"`, but as an <img> the
+ * browser renders the SVG in isolation — outer CSS `color` doesn't
+ * reach inside. The SVG file carries a default `color` attribute
+ * matching `--sw-text` so it stays in the same ink family as the
+ * nav links next to it.
+ *
+ * Wordmark viewBox (124×74) is cropped tight to the Kanji + subtitle
+ * glyphs — no padding inside the SVG — so the img tag's dimensions
+ * map almost entirely to visible ink. 3.2em gives the brand the
+ * presence the previous 1.1em/2.4em attempts lacked, while still
+ * letting the nav bar sit comfortably above the page content. */
+/* Shift the brand-mark down so its vertical mid-line lines up with
+ * the menu row's mid-line. margin-top expands the flex item's cross-
+ * axis size, which under align-items:center has the counter-intuitive
+ * effect of offsetting content within the centred box. 1em moves the
+ * whole wordmark comfortably into visual centre alignment with the
+ * menu links on either side. */
+nav .brand-mark { height: 3.2em; width: auto; display: block; margin-top: 1em; }
+nav ul li a {
+  color: var(--sw-muted);
+  text-decoration: none;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+}
+nav ul li a:hover {
+  color: var(--sw-text);
+  background: var(--sw-surface);
+}
+
+/* ─────────────────────────── Typography ─────────────────────────── */
+
+hgroup h2 {
+  margin-bottom: 0.25rem;
+  letter-spacing: -0.01em;
+}
+hgroup p { color: var(--sw-muted); margin-top: 0; }
+
+.muted { color: var(--sw-muted); }
+.center { text-align: center; }
+.mono, code, pre { font-family: var(--sw-mono); font-size: 0.85em; }
+
+/* ─────────────────────────── Articles / cards ─────────────────────────── */
+
+article {
+  background: var(--sw-surface);
+  border: 1px solid var(--sw-border);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  margin: 0 0 1rem 0;
+  box-shadow: none;
+}
+article h3, article h4 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.01em;
+}
+
+/* ─────────────────────────── Tables ─────────────────────────── */
+
+table.resource-list {
+  background: var(--sw-surface);
+  border: 1px solid var(--sw-border);
+  border-radius: 10px;
+  overflow: hidden;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.94em;
+}
+table.resource-list thead { background: transparent; }
+table.resource-list th {
+  text-transform: uppercase;
+  font-size: 0.72em;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  color: var(--sw-muted);
+  border-bottom: 1px solid var(--sw-border);
+  padding: 0.6rem 0.9rem;
+  text-align: left;
+}
+table.resource-list td {
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--sw-border);
+  vertical-align: middle;
+}
+table.resource-list tr:last-child td { border-bottom: 0; }
+table.resource-list tbody tr:hover td { background: #faf8f1; }
+
+table.resource-list td.actions, table.resource-list th.actions {
+  text-align: right;
+  white-space: nowrap;
+  width: 1%;
+}
+/* Small breathing room between stacked action buttons (e.g.
+ * Disable + Delete on the routes list) so the row doesn't read as
+ * a single wide control. Targeted at adjacent button / link pairs
+ * explicitly — the generic `> * + *` form lost to button defaults
+ * on Pico. */
+table.resource-list td.actions button + button,
+table.resource-list td.actions a + button,
+table.resource-list td.actions button + a {
+  margin-left: 0.5rem;
+}
+table.resource-list a { color: var(--sw-accent); text-decoration: none; }
+table.resource-list a:hover { text-decoration: underline; }
+
+table.striped tbody tr:nth-child(even) { background: #fbfaf5; }
+
+/* ─────────────────────────── Buttons ─────────────────────────── */
+
+button, [role="button"] {
+  font-weight: 500;
+  border-radius: 7px;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid transparent;
+  font-size: 0.9em;
+  line-height: 1.4;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  cursor: pointer;
+}
+
+button.primary, [role="button"].primary {
+  background: var(--sw-accent);
+  color: var(--sw-accent-ink);
+  border-color: var(--sw-accent);
+}
+button.primary:hover, [role="button"].primary:hover {
+  background: #2a52b8;
+}
+
+button.secondary, [role="button"].secondary {
+  background: var(--sw-surface);
+  color: var(--sw-text);
+  border-color: var(--sw-border-strong);
+}
+button.secondary:hover, [role="button"].secondary:hover {
+  background: #f0ede3;
+}
+
+button.destructive, [role="button"].destructive {
+  background: transparent;
+  color: var(--sw-danger);
+  border-color: var(--sw-border-strong);
+}
+button.destructive:hover, [role="button"].destructive:hover {
+  background: #fceceb;
+  border-color: #e0b6b4;
+}
+
+button.outline, [role="button"].outline { background: transparent; }
+
+/* ─────────────────────────── Forms ─────────────────────────── */
+
+form.stack { display: grid; gap: 0.75rem; max-width: 640px; }
+
+form label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--sw-muted);
+  font-size: 0.85em;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+form label input,
+form label select,
+form label textarea {
+  font-size: 0.95rem;
+  font-weight: 400;
+  color: var(--sw-text);
+  text-transform: none;
+  letter-spacing: normal;
+  background: var(--sw-surface);
+  border: 1px solid var(--sw-border-strong);
+  border-radius: 7px;
+  padding: 0.5rem 0.65rem;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+form label input:focus,
+form label select:focus,
+form label textarea:focus {
+  outline: none;
+  border-color: var(--sw-accent);
+  box-shadow: 0 0 0 3px rgba(47, 93, 214, 0.18);
+}
+form label small {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.82em;
+}
+
+/* Checkbox rows. The generic `form label input { padding/border/... }`
+ * above stretches a native checkbox into a full-width text-input
+ * carcass, which makes it visually broken and (worse) uncheckable
+ * because the actual hit area moves out from under the cursor. Reset
+ * to a two-column grid: small fixed-width checkbox column on the
+ * left, label + hint span the right. */
+form label.checkbox-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.55rem;
+  row-gap: 0.15rem;
+  align-items: center;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.95rem;
+  font-weight: 400;
+  color: var(--sw-text);
+  cursor: pointer;
+  padding: 0.15rem 0;
+}
+form label.checkbox-row input[type="checkbox"] {
+  /* Strip the text-input styling the generic rule applied. */
+  appearance: auto;
+  width: 1rem;
+  min-width: 0;
+  height: 1rem;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  cursor: pointer;
+}
+form label.checkbox-row span {
+  align-self: center;
+}
+/* Hint text wraps to a second row under the label, indented under
+ * the span so it visually attaches to the option it describes. */
+form label.checkbox-row small {
+  grid-column: 2;
+}
+
+form fieldset {
+  border: 1px solid var(--sw-border);
+  border-radius: 10px;
+  padding: 0.75rem 1rem 1rem;
+  background: var(--sw-surface);
+}
+form fieldset legend {
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--sw-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 0.4rem;
+}
+
+form.inline {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+}
+form.inline input {
+  flex: 1;
+  min-width: 220px;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--sw-border-strong);
+  border-radius: 7px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+}
+
+/* ─────────────────────────── Status pills ─────────────────────────── */
+
+.pill {
+  display: inline-block;
+  font-size: 0.78em;
+  font-weight: 500;
+  padding: 0.12em 0.6em;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+.pill.enabled {
+  color: var(--sw-enabled);
+  background: var(--sw-enabled-bg);
+  border-color: rgba(10, 122, 74, 0.2);
+}
+.pill.disabled {
+  color: var(--sw-disabled);
+  background: var(--sw-disabled-bg);
+  border-color: rgba(124, 118, 107, 0.18);
+}
+
+/* ─────────────────────────── Flash / alerts ─────────────────────────── */
+
+.flash.error {
+  background: #fceceb;
+  border: 1px solid #e0b6b4;
+  border-radius: 8px;
+  padding: 0.65rem 0.9rem;
+  color: #802424;
+  font-size: 0.9em;
+}
+.flash.error a { color: #802424; margin-left: 0.4rem; }
+.row-error td { background: #fdf5f4; }
+
+/* ─────────────────────────── Misc ─────────────────────────── */
+
+code.expr {
+  display: inline-block;
+  max-width: 52ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+pre.mono {
+  background: #1e1e1e;
+  color: #eaeaea;
+  padding: 0.8rem 1rem;
+  border-radius: 8px;
+  font-size: 0.85em;
+  overflow-x: auto;
+}
+
+.issue-form {
+  background: #faf8f1;
+  border-style: dashed;
+}
+
+/* ─────────────────────────── Danger Zone ─────────────────────────── */
+
+/*
+ * GitHub-style "Danger Zone" wrapper. A red double-line frame plus a
+ * tinted background separates rare, destructive controls from the
+ * everyday settings above. Each `.danger-section` inside is an
+ * existing article with the warning palette applied so its inner
+ * fields stay laid out exactly like a normal fieldset — only the
+ * frame and the action buttons signal the danger.
+ */
+section.danger-zone {
+  border: 2px solid var(--sw-danger);
+  border-radius: 12px;
+  background: #fdf3f3;
+  padding: 1rem 1.25rem;
+  margin-top: 2.5rem;
+}
+section.danger-zone > hgroup h2 {
+  color: var(--sw-danger);
+}
+section.danger-zone .danger-section {
+  border-color: #e0b6b4;
+  background: #fff8f8;
+}
+
+/* Warning-tier button. Filled red with white ink — strong enough to
+ * read as "this will hurt" without falling into the purely-destructive
+ * `.destructive` outline style which is reserved for inline
+ * delete-row actions. */
+button.warning, [role="button"].warning {
+  background: var(--sw-danger);
+  color: #ffffff;
+  border-color: var(--sw-danger);
+}
+button.warning:hover, [role="button"].warning:hover {
+  background: #8e1e18;
+  border-color: #8e1e18;
+}
+button.warning:disabled, [role="button"].warning:disabled {
+  background: #e0b6b4;
+  border-color: #e0b6b4;
+  color: #ffffff;
+  cursor: not-allowed;
+}
+
+/* DEK ring status badges. Re-uses the enabled/disabled palette from
+ * the Pico overrides above so the visual language matches the rest of
+ * the admin console. Retired rows go grey and italic to make it obvious
+ * they're audit-only. */
+.badge {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-family: var(--sw-mono);
+  font-size: 0.78em;
+  border: 1px solid transparent;
+}
+.badge-active {
+  color: var(--sw-enabled);
+  background: var(--sw-enabled-bg);
+  border-color: rgba(10, 122, 74, 0.25);
+}
+.badge-inactive {
+  color: var(--sw-disabled);
+  background: var(--sw-disabled-bg);
+  border-color: rgba(124, 118, 107, 0.25);
+}
+.badge-retired {
+  color: var(--sw-danger);
+  background: #f7e0de;
+  border-color: rgba(179, 38, 30, 0.25);
+}
+tr.row-retired td { color: var(--sw-muted); font-style: italic; }
+
+/* ─────────────────────────── Version badge ─────────────────────────── */
+
+/*
+ * Always-on indicator wedged between the menu and the signed-in chip.
+ * Green when the client/daemon pair agree (positive "binaries match"
+ * signal), red on mismatch, yellow on unreachable. Compact so it
+ * doesn't overpower the navigation.
+ */
+nav .version-badge { padding: 0 0.4rem; }
+.version-warning {
+  display: inline-block;
+  font-family: var(--sw-mono);
+  font-size: 0.8em;
+  padding: 0.1em 0.5em;
+  border-radius: 999px;
+  border: 1px solid #e0b6b4;
+  background: #fceceb;
+  color: #802424;
+  cursor: help;
+}
+.version-warning.ok {
+  border-color: #b6dabb;
+  background: #ecf6ed;
+  color: #1f5a2c;
+}
+.version-warning.unreachable {
+  border-color: #d6c79a;
+  background: #fbf3d8;
+  color: #6e5b1e;
+}
+
+/* htmx: fade the row while an action runs. */
+.htmx-request { opacity: 0.55; transition: opacity 0.12s ease; }
+
+@media (max-width: 680px) {
+  main.container { padding-left: 0.75rem; padding-right: 0.75rem; }
+  table.resource-list { font-size: 0.88em; }
+  table.resource-list th, table.resource-list td { padding: 0.45rem 0.55rem; }
+  form.inline input { min-width: 100%; }
+}

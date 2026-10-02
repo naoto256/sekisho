@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        env_file="${DPKG_ROOT:-}/etc/default/sekishod"
+        if [ -e "$env_file" ]; then
+            chmod 0600 "$env_file"
+            chown root:root "$env_file"
+        fi
+
+        # Create system user if it doesn't exist
+        if ! getent passwd sekisho >/dev/null 2>&1; then
+            adduser --system --group --home /var/lib/sekisho --no-create-home --shell /usr/sbin/nologin sekisho
+        fi
+
+        # Ensure state directory exists with correct ownership
+        install -d -o sekisho -g sekisho -m 0750 /var/lib/sekisho
+
+        # Enable and start the daemon. The sekisho-webui unit, if installed,
+        # is started by its own package's postinst (it's PartOf this unit so
+        # it follows the daemon's lifecycle once both are running).
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload
+            systemctl enable sekishod.service
+            systemctl start sekishod.service || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#

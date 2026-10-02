@@ -1,0 +1,27 @@
+# /etc/default/sekishod — Environment variables for the Sekisho IAP service.
+# Uncomment and modify as needed. Changes take effect after: systemctl restart sekishod
+
+# Per-instance SQLite that holds node-local config (instance_config table).
+# Always opened as SQLite. When SEKISHO_SERVICE_DB is unset, this file
+# also holds operational data (routes, idps, policies, sessions, ...).
+SEKISHO_INSTANCE_CONFIG=/var/lib/sekisho/instance_config.db
+
+# Operational (service) database. Leave unset to keep operational data
+# in the per-instance SQLite above (single-node default). Point at a shared
+# Postgres to run Sekisho in HA across multiple nodes, e.g.:
+# SEKISHO_SERVICE_DB=postgres://sekisho:<password>@db.example.com:5432/sekisho
+
+# Proxy listen and management API listen addresses are configured via
+# the Sekisho management API (edit sekisho/global), not environment variables.
+
+# Log level: trace, debug, info, warn, error
+SEKISHO_LOG_LEVEL=info
+
+# The master key is not accepted in this environment file. The systemd unit
+# loads /etc/sekisho/master-key as a service credential instead.
+
+# HTTP listen address for ACME challenges and HTTPS redirect (port 80)
+SEKISHO_HTTP_LISTEN=0.0.0.0:80
+
+# Disable TLS on the proxy listener (set to true if behind another TLS terminator)
+# SEKISHO_NO_TLS=false

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="sekisho" color="#1f1f1f">
+  <!--
+    Sekisho (関所) logo: the mincho-style Kanji 関 ("gate / barrier / checkpoint")
+    set inside a rounded square frame. The character is rendered via <text>
+    so it stays crisp at any size and picks up the viewer's installed
+    Mincho font. A broad fallback chain covers macOS (Hiragino Mincho),
+    Windows (Yu Mincho / MS Mincho), Linux (Noto Serif CJK JP), and a
+    generic `serif` — which on most modern systems also resolves to a
+    Mincho-like CJK serif face for the character.
+  -->
+  <rect x="3" y="3" width="58" height="58" rx="6" ry="6"
+        fill="none" stroke="currentColor" stroke-width="3"/>
+  <text x="32" y="49" text-anchor="middle"
+        font-family="'Hiragino Mincho ProN','Hiragino Mincho Pro','Yu Mincho','YuMincho','Noto Serif CJK JP','Noto Serif JP','MS Mincho',serif"
+        font-size="44" font-weight="400" fill="currentColor">関</text>
+</svg>

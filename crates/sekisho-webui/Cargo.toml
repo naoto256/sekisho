@@ -1,0 +1,40 @@
+[package]
+name = "sekisho-webui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Web admin UI (BFF) for Sekisho IAP"
+
+[[bin]]
+name = "sekisho-webui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+argon2 = { version = "0.5", features = ["std"] }
+axum = { version = "0.8", features = ["json", "macros", "form"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.9"
+clap = { version = "4", features = ["derive", "env"] }
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+maud = { version = "0.26", features = ["axum"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-native-certs", "rustls", "json"] }
+sekisho-api-protocol = { path = "../sekisho-api-protocol" }
+sekisho-management-rpk-tls = { path = "../sekisho-management-rpk-tls" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "compression-gzip", "limit"] }
+rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rustls-pemfile = "2"
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
+hyper = { version = "1", features = ["http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = "0.10"
+hex = "0.4"

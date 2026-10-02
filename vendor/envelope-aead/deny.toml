@@ -1,0 +1,32 @@
+# `cargo deny` configuration for this crate.
+#
+# Run `cargo deny check` to exercise advisories, licenses, and source
+# checks in one pass.
+
+[advisories]
+version = 2
+ignore = []
+
+[licenses]
+version = 2
+
+# Permissive-only allowlist. envelope-aead ships under MIT OR Apache-2.0,
+# so we accept transitive deps that resolve to a SPDX-compatible
+# permissive license.
+#
+# List is trimmed to the licenses actually encountered in the current
+# dependency graph so `cargo deny check licenses` runs warning-free
+# under the push-gate rust scope. Add a license here only when a new
+# dep introduces it.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "MIT",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "allow"

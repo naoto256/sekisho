@@ -1,0 +1,16 @@
+/target
+*.db
+*.db-shm
+*.db-wal
+.env
+*.pem
+*.key
+*.p12
+*.pfx
+
+# mdBook generated output
+/docs/book/
+
+# Local-only working notes (TODO drafts, cold-start maps, handoff memos)
+_*.md
+/SEKISHO_OVERVIEW.md

@@ -1,0 +1,37 @@
+Source: sekisho
+Section: net
+Priority: optional
+Maintainer: Naoto Morishima <naoto256@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), cargo, rustc (>= 1.95)
+Standards-Version: 4.6.2
+Homepage: https://github.com/naoto256/sekisho
+
+Package: sekishod
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
+Description: Identity-Aware Proxy daemon (sekishod)
+ Rust-based identity-aware proxy with OIDC/SAML authentication,
+ ACME TLS certificate management, and policy-based access control.
+ .
+ This package contains the proxy daemon (sekishod), its systemd unit,
+ the /etc/default/sekishod environment file, and the system user the
+ service runs as. Operators install sekisho-cli alongside this package
+ to manage the daemon, and sekisho-webui for a browser-based admin UI.
+
+Package: sekisho-cli
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, sekishod (= ${binary:Version})
+Description: Sekisho management CLI (sekisho-cli)
+ JunOS-style interactive shell for managing a sekishod daemon over its
+ local control socket. Version-locked to sekishod: a sekisho-cli binary
+ only talks to a daemon of the exact same version, so this package
+ strictly depends on the matching sekishod package.
+
+Package: sekisho-webui
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, sekishod (= ${binary:Version})
+Description: Sekisho web admin UI (sekisho-webui)
+ Read/write web admin UI (axum + Maud + HTMX) for the sekishod
+ management API. Ships its own systemd unit, disabled by default —
+ operators opt in per host. Version-locked to sekishod, so this
+ package strictly depends on the matching sekishod package.

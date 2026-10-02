@@ -1,0 +1,12 @@
+# Nonsecret configuration for the reference Docker Compose deployment.
+# The WebUI shares only sekishod's network namespace. This listener is not
+# published to the host; expose it through a normal Sekisho HTTPS proxy Route.
+listen: 127.0.0.1:9444
+sekisho_api_url: https://127.0.0.1:9443
+# `SEKISHO_MANAGEMENT_RPK_PIN` is injected by docker-compose after the
+# operator obtains it with `sekishod --print-management-rpk`.
+
+# No startup credential is stored here. Enter a management API key through
+# the setup form; it remains in process memory only.
+auth: {}
+guard: {}

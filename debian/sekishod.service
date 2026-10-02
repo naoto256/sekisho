@@ -1,0 +1,55 @@
+[Unit]
+Description=Sekisho Identity-Aware Proxy
+Documentation=https://github.com/naoto256/sekisho
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sekisho
+Group=sekisho
+EnvironmentFile=-/etc/default/sekishod
+UnsetEnvironment=SEKISHO_MASTER_KEY
+LoadCredential=sekisho-master-key:/etc/sekisho/master-key
+Environment=SEKISHO_MASTER_KEY_FILE=%d/sekisho-master-key
+ExecStart=/usr/bin/sekishod --instance-config /var/lib/sekisho/instance_config.db
+Restart=on-failure
+RestartSec=5
+
+# Graceful shutdown: sekishod handles SIGTERM by draining HTTP (30s),
+# then WebSockets (60s), then closing DB pools. Keep TimeoutStopSec in
+# sync with `shutdown::HARD_DEADLINE` in crates/sekishod/src/shutdown.rs
+# — the daemon self-aborts at that deadline, but systemd must give it at
+# least as long before escalating to SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=90s
+
+# Allow binding to privileged ports (443, etc.)
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+
+# State directory (systemd creates /var/lib/sekisho owned by sekisho:sekisho)
+StateDirectory=sekisho
+# Runtime directory for control socket (systemd creates /run/sekisho)
+RuntimeDirectory=sekisho
+ReadWritePaths=/var/lib/sekisho
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sekishod
+
+[Install]
+WantedBy=multi-user.target

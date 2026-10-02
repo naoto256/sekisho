@@ -1,0 +1,13 @@
+[package]
+name = "sekisho-api-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared API contracts for sekishod and its clients, plus client-side orchestration for sekisho-cli and sekisho-webui."
+
+[dependencies]
+base64 = "0.22"
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

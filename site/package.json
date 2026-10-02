@@ -1,0 +1,18 @@
+{
+  "name": "sekisho-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "eleventy --serve --port=8089 --output=.dev",
+    "build": "eleventy",
+    "check:links": "node test/links.mjs",
+    "format:check": "prettier --check lib src/*.js test eleventy.config.js package.json README.md",
+    "check:unit": "node --test test/content.test.mjs test/sitemap.test.mjs"
+  },
+  "devDependencies": {
+    "@11ty/eleventy": "3.1.6",
+    "markdown-it": "15.0.1",
+    "markdown-it-anchor": "9.2.0",
+    "prettier": "3.6.2"
+  }
+}

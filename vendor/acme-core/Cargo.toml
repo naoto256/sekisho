@@ -1,0 +1,31 @@
+[package]
+name = "acme-core"
+version = "0.3.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Reusable ACME protocol primitives for account management, certificate issuance, and renewal"
+publish = false
+
+[lib]
+name = "acme_core"
+path = "src/lib.rs"
+
+[dependencies]
+instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "ring", "time", "x509-parser"] }
+rcgen = "0.13"
+rustls-pki-types = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+thiserror = "2"
+time = "0.3"
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
+url = "2"
+zeroize = "1"
+
+[dev-dependencies]
+base64 = "0.22"
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }

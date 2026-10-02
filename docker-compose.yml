@@ -1,0 +1,97 @@
+# Reference docker-compose for running Sekisho with a Postgres backing store.
+#
+# Single-node mode (without Postgres) works too: drop the `postgres`
+# service and remove SEKISHO_SERVICE_DB from sekishod's environment —
+# operational data then lives in the SQLite instance configuration at
+# /var/lib/sekisho/instance_config.db.
+#
+# Before first run:
+#   1. Generate a master key:
+#        openssl rand -hex 32 | sudo install -o root -g 65532 -m 0440 \
+#          /dev/stdin /absolute/path/to/sekisho-master-key
+#      Then set SEKISHO_MASTER_KEY_FILE to that path in .env.
+#      Rootless or userns-remapped Docker requires equivalent read access for
+#      the image's mapped gid 65532; never make the credential world-readable.
+#   2. Bootstrap the per-instance management RPK without starting services:
+#        docker compose run --rm sekishod --print-management-rpk
+#      Copy its single output line to SEKISHO_MANAGEMENT_RPK_PIN in .env.
+#   3. docker compose up -d
+#   4. docker compose exec sekishod /usr/bin/sekisho-cli --local-auth \
+#        --socket /var/lib/sekisho/control.sock
+#      (docker compose exec runs as the daemon uid and shares its socket.)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sekisho
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: sekisho
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sekisho -d sekisho"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  sekishod:
+    image: ghcr.io/naoto256/sekisho:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SEKISHO_MASTER_KEY_FILE: /run/secrets/sekisho_master_key
+      SEKISHO_SERVICE_DB: postgres://sekisho:${POSTGRES_PASSWORD}@postgres:5432/sekisho
+      SEKISHO_LOG_LEVEL: info
+      # Used only by the in-image sekisho-cli healthcheck / operator CLI.
+      SEKISHO_MANAGEMENT_RPK_PIN: ${SEKISHO_MANAGEMENT_RPK_PIN:-}
+    ports:
+      - "443:443" # TLS proxy
+      - "80:80"   # ACME HTTP-01 + plaintext redirect
+      # Ports 9443 and 9444 stay inside the shared network namespace. The
+      # normal browser path is a Sekisho HTTPS Route whose upstream is
+      # http://127.0.0.1:9444.
+      #
+      # Optional host-local direct access requires both of these changes:
+      #   1. uncomment the mapping below; and
+      #   2. set listen: 0.0.0.0:9444 in docker/sekisho-webui.yaml.
+      # Never publish the unprotected WebUI listener to a LAN or the internet.
+      # - "127.0.0.1:9444:9444"
+    volumes:
+      - sekisho-data:/var/lib/sekisho
+    secrets:
+      - sekisho_master_key
+
+  sekisho-webui:
+    image: ghcr.io/naoto256/sekisho:latest
+    restart: unless-stopped
+    depends_on:
+      sekishod:
+        condition: service_healthy
+    # Share only sekishod's network namespace so the WebUI can reach the
+    # loopback-only management API without publishing it to the host.
+    network_mode: "service:sekishod"
+    # Override the daemon entrypoint to launch the webui binary instead.
+    entrypoint: ["/usr/bin/sekisho-webui"]
+    environment:
+      SEKISHO_MANAGEMENT_RPK_PIN: ${SEKISHO_MANAGEMENT_RPK_PIN:-}
+    volumes:
+      - ./docker/sekisho-webui.yaml:/etc/sekisho-webui/webui.yaml:ro
+    # The image healthcheck probes sekishod. It would report the daemon's
+    # readiness, not the health of this separately running WebUI process.
+    healthcheck:
+      disable: true
+    # webui talks to sekishod via the management API. Expects an API key
+    # supplied through the on-screen setup form. Browser traffic reaches this
+    # loopback-only listener through a normal Sekisho HTTPS proxy Route.
+
+volumes:
+  pgdata:
+  sekisho-data:
+
+secrets:
+  sekisho_master_key:
+    file: ${SEKISHO_MASTER_KEY_FILE:?set SEKISHO_MASTER_KEY_FILE in .env}

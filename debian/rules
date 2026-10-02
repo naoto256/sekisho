@@ -1,0 +1,50 @@
+#!/usr/bin/make -f
+
+# Rust is typically installed via rustup under the invoking user's home,
+# not via apt. `fakeroot` trims PATH to a minimal system set and loses the
+# user's cargo bin, so resolve it ourselves. `?=` keeps explicit callers'
+# overrides (e.g. `CARGO=/opt/rust/bin/cargo dpkg-buildpackage`) working.
+CARGO ?= $(shell command -v cargo 2>/dev/null || echo $${CARGO_HOME:-$$HOME/.cargo}/bin/cargo)
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(CARGO) build --release --workspace
+
+# Multi-binary-package layout:
+#   sekishod      — daemon binary, systemd unit, /etc/default/sekishod
+#   sekisho-cli   — CLI binary only (depends on sekishod for version match)
+#   sekisho-webui — webui binary, systemd unit, /etc/sekisho-webui/webui.yaml.example
+# Each binary lands in its own debian/<pkg>/ tree, which dh_install /
+# dh_systemd_*/dh_installdirs then assemble into one .deb per package.
+override_dh_auto_install:
+	# sekishod
+	install -Dm755 target/release/sekishod \
+	    debian/sekishod/usr/bin/sekishod
+	install -Dm600 debian/sekishod.default \
+	    debian/sekishod/etc/default/sekishod
+	# sekisho-cli
+	install -Dm755 target/release/sekisho-cli \
+	    debian/sekisho-cli/usr/bin/sekisho-cli
+	# sekisho-webui
+	install -Dm755 target/release/sekisho-webui \
+	    debian/sekisho-webui/usr/bin/sekisho-webui
+	install -Dm644 debian/sekisho-webui-config.yaml \
+	    debian/sekisho-webui/etc/sekisho-webui/webui.yaml.example
+
+override_dh_auto_test:
+	$(CARGO) test --workspace
+
+# The daemon is enabled normally. The Web UI is an optional management
+# client and must remain opt-in after package installation.
+override_dh_installsystemd:
+	dh_installsystemd -psekishod
+	dh_installsystemd -psekisho-webui --no-enable --no-start
+
+override_dh_fixperms:
+	dh_fixperms
+	chmod 0600 debian/sekishod/etc/default/sekishod
+
+# Skip stripping — Rust binaries handle their own debug info
+override_dh_strip:

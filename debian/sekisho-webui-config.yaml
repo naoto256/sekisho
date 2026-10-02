@@ -1,0 +1,60 @@
+# sekisho-webui config example.
+#
+# Default location: /etc/sekisho-webui/webui.yaml — override with
+# `--config <path>`.
+
+# Address sekisho-webui listens on. When `tls:` is set this is a
+# TLS-terminated listener; otherwise plain HTTP and the operator
+# is expected to front it with a reverse proxy.
+listen: 127.0.0.1:9444
+
+# Base URL of the upstream Sekisho management API (sekishod).
+# sekisho-webui has no multi-URL failover (kaido-only feature) —
+# this is a single scalar.
+sekisho_api_url: https://127.0.0.1:9443
+
+# Required out-of-band Ed25519 raw-public-key pin. Obtain it on the daemon
+# host with `sekishod --print-management-rpk`; private key material never
+# leaves the instance store.
+management_rpk_pin: "replace-with-sekisho-rpk-v1-pin"
+
+# Authentication to the upstream Sekisho daemon.
+# Pick at most one block; both omitted means "no credential at
+# startup, prompt the operator via the /setup form" (the key then
+# lives in process memory only).
+auth:
+  # Authenticate via the local Unix challenge socket. The sekisho
+  # group must own the socket and sekisho-webui must run as a member.
+  local_auth:
+    socket: /run/sekisho/control.sock
+  # Or pre-seed an API key (rarely used outside scripted bootstraps;
+  # the /setup form is the normal posture):
+  # api_key: "sekisho_..."
+
+# Access control on sekisho-webui itself.
+# Pick at most one block; both omitted leaves the UI unprotected
+# (a reverse proxy / firewall MUST front it). A startup warning is
+# logged in that case.
+guard:
+  # Verify X-Sekisho-Jwt headers injected by an upstream Sekisho
+  # IAP. sekisho-webui's guard takes a single URL today — the
+  # YAML key is a list for cross-system shape consistency with
+  # kaido-webui, but only the first entry is honoured here.
+  # trust_sekisho_jwt:
+  #   sekisho_api_urls:
+  #     - https://127.0.0.1:9443
+  #   expected_aud: https://sekisho-admin.example.com
+  #   expected_iss: https://auth.example.com
+  #
+  # Or RFC 7617 Basic auth. Accepts user:argon2:<PHC-hash> for
+  # production or user:plain:<password> for dev (hashed on startup).
+  # basic_auth: "admin:argon2:$argon2id$v=19$m=...$...$..."
+
+# Optional TLS termination on the sekisho-webui listener itself.
+# When omitted, sekisho-webui serves plain HTTP and assumes an
+# upstream proxy terminates TLS (the historical posture). When
+# set, both `cert` and `key` must point at PEM files readable by
+# the sekisho-webui user.
+# tls:
+#   cert: /etc/sekisho-webui/cert.pem
+#   key:  /etc/sekisho-webui/key.pem

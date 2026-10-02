@@ -1,0 +1,6 @@
+# Pinned toolchain for reproducible builds across local, CI, and release
+# pipelines. Match the Dockerfile builder image and bump in lockstep.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

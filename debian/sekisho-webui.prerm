@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|upgrade)
+        if [ -d /run/systemd/system ]; then
+            systemctl stop sekisho-webui.service || true
+            systemctl disable sekisho-webui.service || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#

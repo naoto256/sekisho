@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -4 180 88" role="img" aria-label="sekisho" color="#1f1f1f">
+  <!--
+    Brand lockup used in the sekisho-webui header: Kanji 関所 stacked
+    over the romanised "sekisho" subtitle, framed by ASCII square
+    brackets so the whole thing reads as "[ sekisho ]" at a glance.
+    Kept font-referenced (not path-outlined) while the design is
+    still in flux; the intent is to convert the glyphs to inline SVG
+    path data once the composition is locked, so the mark renders
+    identically on systems that lack a CJK-mincho face.
+  -->
+  <text x="8" y="60" text-anchor="start"
+        font-family="'Hiragino Mincho ProN','Hiragino Mincho Pro','Yu Mincho','YuMincho','Noto Serif CJK JP','Noto Serif JP','MS Mincho',serif"
+        font-size="76" font-weight="300" fill="currentColor">[</text>
+  <text x="172" y="60" text-anchor="end"
+        font-family="'Hiragino Mincho ProN','Hiragino Mincho Pro','Yu Mincho','YuMincho','Noto Serif CJK JP','Noto Serif JP','MS Mincho',serif"
+        font-size="76" font-weight="300" fill="currentColor">]</text>
+  <text x="90" y="54" text-anchor="middle"
+        font-family="'Hiragino Mincho ProN','Hiragino Mincho Pro','Yu Mincho','YuMincho','Noto Serif CJK JP','Noto Serif JP','MS Mincho',serif"
+        font-size="54" font-weight="500" fill="currentColor">関所</text>
+  <text x="90" y="78" text-anchor="middle"
+        font-family="system-ui,-apple-system,'Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="16" letter-spacing="4" fill="currentColor">sekisho</text>
+</svg>

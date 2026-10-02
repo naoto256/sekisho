@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # On first install, seed /etc/sekisho-webui/webui.yaml from the
+        # shipped example so the service has *something* to load.
+        # We never overwrite an existing file — operators edit it in
+        # place. Same pattern as kaido-webui.postinst.
+        if [ ! -f /etc/sekisho-webui/webui.yaml ]; then
+            install -d -m 0755 /etc/sekisho-webui
+            cp /etc/sekisho-webui/webui.yaml.example \
+               /etc/sekisho-webui/webui.yaml
+            chmod 0644 /etc/sekisho-webui/webui.yaml
+        fi
+
+        # The Web UI is optional. debian/rules installs its unit with
+        # --no-enable --no-start, so operators opt in explicitly.
+        ;;
+esac
+
+#DEBHELPER#

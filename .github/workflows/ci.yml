@@ -1,0 +1,271 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+# Cancel superseded runs on the same ref to keep the queue lean.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default to a read-only GITHUB_TOKEN. Individual jobs grant more per-job
+# if they need write scopes (none currently do).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  test:
+    name: test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      # SAML exc-c14n oracle tests shell out to xmllint (libxml2-utils) and
+      # xmlsec1; without these the corresponding tests skip silently and we
+      # lose coverage. openssl is already present on ubuntu-latest.
+      - name: Install xmllint + xmlsec1 (SAML c14n oracle tests)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxml2-utils xmlsec1 libxmlsec1-openssl
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # pin-audit:2026-05-21 e18b497 | v2
+        with:
+          shared-key: ci-test
+
+      - name: cargo build --workspace
+        run: cargo build --workspace --locked
+
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked
+
+  lint:
+    name: lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # pin-audit:2026-05-21 e18b497 | v2
+        with:
+          shared-key: ci-lint
+
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  docker:
+    name: Docker build smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+
+      - name: Build Docker image
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: docker build --progress=plain --tag sekisho-ci:${{ github.sha }} .
+
+      - name: Exercise default command, healthcheck, and reference Compose
+        env:
+          SEKISHO_IMAGE: sekisho-ci:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          run_dir="$(mktemp -d)"
+          export POSTGRES_PASSWORD=sekisho-ci-only
+          export SEKISHO_MASTER_KEY_FILE="$run_dir/master-key"
+          export SEKISHO_MANAGEMENT_RPK_PIN=
+          raw_container="sekisho-ci-raw-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          project="sekisho-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "$raw_container" >/dev/null 2>&1 || true
+            POSTGRES_PASSWORD=sekisho-ci-only \
+              SEKISHO_MASTER_KEY_FILE="$run_dir/master-key" \
+              docker compose -p "$project" down -v --remove-orphans \
+                >/dev/null 2>&1 || true
+            sudo rm -rf "$run_dir"
+          }
+          trap cleanup EXIT
+
+          openssl rand -hex 32 | sudo install -o root -g 65532 -m 0440 \
+            /dev/stdin "$run_dir/master-key"
+          mkdir "$run_dir/raw-state"
+          sudo chown 65532:65532 "$run_dir/raw-state"
+
+          expected_health='["CMD","/usr/bin/sekisho-cli","--healthz","https://127.0.0.1:9443"]'
+          test "$(docker image inspect -f '{{json .Config.Cmd}}' "$SEKISHO_IMAGE")" = null
+          test "$(docker image inspect -f '{{json .Config.Healthcheck.Test}}' "$SEKISHO_IMAGE")" = "$expected_health"
+
+          raw_management_pin="$(docker run --rm \
+            --mount "type=bind,source=$run_dir/master-key,target=/run/secrets/sekisho_master_key,readonly" \
+            --mount "type=bind,source=$run_dir/raw-state,target=/var/lib/sekisho" \
+            -e SEKISHO_MASTER_KEY_FILE=/run/secrets/sekisho_master_key \
+            "$SEKISHO_IMAGE" --print-management-rpk)"
+          case "$raw_management_pin" in
+            sekisho-rpk-v1:ed25519:*) ;;
+            *) exit 1 ;;
+          esac
+
+          docker run -d --name "$raw_container" \
+            --mount "type=bind,source=$run_dir/master-key,target=/run/secrets/sekisho_master_key,readonly" \
+            --mount "type=bind,source=$run_dir/raw-state,target=/var/lib/sekisho" \
+            -e SEKISHO_MASTER_KEY_FILE=/run/secrets/sekisho_master_key \
+            -e SEKISHO_MANAGEMENT_RPK_PIN="$raw_management_pin" \
+            "$SEKISHO_IMAGE"
+
+          for _ in $(seq 1 90); do
+            state="$(docker inspect -f '{{.State.Status}}' "$raw_container")"
+            health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$raw_container")"
+            if [ "$state" = exited ] || [ "$state" = dead ]; then
+              docker logs "$raw_container"
+              exit 1
+            fi
+            [ "$health" = healthy ] && break
+            sleep 2
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' "$raw_container")" = healthy
+          test "$(docker inspect -f '{{.Config.User}}' "$raw_container")" = nonroot
+          test "$(docker inspect -f '{{json .Config.Cmd}}' "$raw_container")" = null
+          test "$(docker inspect -f '{{json .Config.Healthcheck.Test}}' "$raw_container")" = "$expected_health"
+          test -f "$run_dir/raw-state/instance_config.db"
+          test ! -e "$run_dir/raw-state/bootstrap.db"
+          docker rm -f "$raw_container" >/dev/null
+
+          docker tag "$SEKISHO_IMAGE" ghcr.io/naoto256/sekisho:latest
+          SEKISHO_MANAGEMENT_RPK_PIN="$(docker compose -p "$project" run --rm --no-deps \
+            sekishod --print-management-rpk)"
+          export SEKISHO_MANAGEMENT_RPK_PIN
+          case "$SEKISHO_MANAGEMENT_RPK_PIN" in
+            sekisho-rpk-v1:ed25519:*) ;;
+            *) exit 1 ;;
+          esac
+          POSTGRES_PASSWORD=sekisho-ci-only \
+            SEKISHO_MASTER_KEY_FILE="$run_dir/master-key" \
+            docker compose -p "$project" up -d --wait --wait-timeout 180 \
+              postgres sekishod
+          docker compose -p "$project" up -d sekisho-webui
+
+          daemon_id="$(docker compose -p "$project" ps -q sekishod)"
+          webui_id="$(docker compose -p "$project" ps -q sekisho-webui)"
+          test -n "$daemon_id"
+          test -n "$webui_id"
+          test "$(docker inspect -f '{{.State.Health.Status}}' "$daemon_id")" = healthy
+          test "$(docker inspect -f '{{.State.Status}}' "$webui_id")" = running
+          test "$(docker inspect -f '{{.Config.User}}' "$webui_id")" = nonroot
+          test "$(docker inspect -f '{{json .Config.Healthcheck.Test}}' "$webui_id")" = '["NONE"]'
+          test "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$webui_id")" = "container:$daemon_id"
+          test "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/sekisho-webui/webui.yaml"}}{{.RW}}{{end}}{{end}}' "$webui_id")" = false
+          bindings="$(docker inspect -f '{{json .HostConfig.PortBindings}}' "$daemon_id")"
+          case "$bindings" in
+            *9443*|*9444*) exit 1 ;;
+          esac
+
+          for _ in $(seq 1 30); do
+            docker logs "$webui_id" >"$run_dir/webui.log" 2>&1
+            grep -q 'server version matches' "$run_dir/webui.log" && break
+            sleep 1
+          done
+          grep -q 'server version matches' "$run_dir/webui.log"
+          grep -q '127.0.0.1:9444' "$run_dir/webui.log"
+
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=webui.localhost' \
+            -addext 'subjectAltName=DNS:webui.localhost' \
+            -keyout "$run_dir/webui-key.pem" -out "$run_dir/webui-cert.pem" \
+            >/dev/null 2>&1
+          sudo chown 65532:65532 "$run_dir/webui-key.pem" "$run_dir/webui-cert.pem"
+          sudo chmod 0600 "$run_dir/webui-key.pem" "$run_dir/webui-cert.pem"
+          sudo docker cp -a "$run_dir/webui-key.pem" "$daemon_id:/var/lib/sekisho/webui-key.pem"
+          sudo docker cp -a "$run_dir/webui-cert.pem" "$daemon_id:/var/lib/sekisho/webui-cert.pem"
+          docker compose -p "$project" exec -T sekishod \
+            /usr/bin/sekisho-cli --local-auth \
+            --socket /var/lib/sekisho/control.sock <<'EOF'
+          configure
+          create route webui
+          set from https://webui.localhost
+          set to http://127.0.0.1:9444
+          set tls-downstream custom
+          set access.allow-public-unauthenticated-access true
+          commit
+          exit
+          exit
+          upload certificate webui.localhost /var/lib/sekisho/webui-cert.pem /var/lib/sekisho/webui-key.pem
+          enable route webui
+          exit
+          EOF
+          curl --fail --location --silent --show-error --insecure \
+            --resolve webui.localhost:443:127.0.0.1 \
+            https://webui.localhost/ >/dev/null
+
+          docker compose -p "$project" stop postgres
+          for _ in $(seq 1 75); do
+            health="$(docker inspect -f '{{.State.Health.Status}}' "$daemon_id")"
+            [ "$health" = unhealthy ] && break
+            sleep 2
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' "$daemon_id")" = unhealthy
+          test "$(docker inspect -f '{{.State.Running}}' "$daemon_id")" = true
+
+  deny:
+    name: cargo-deny (supply chain)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+      - uses: EmbarkStudios/cargo-deny-action@6c8f9facfa5047ec02d8485b6bf52b587b7777d1  # pin-audit:2026-05-21 6c8f9fa | v2.0.18
+        with:
+          command: check
+
+  audit:
+    name: cargo-audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: cargo audit
+        run: cargo audit
+
+  docs:
+    name: mdbook build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+
+      - name: Install mdbook
+        run: |
+          set -euo pipefail
+          MDBOOK_VERSION=0.4.40
+          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin
+
+      - name: mdbook build docs
+        run: mdbook build docs
+
+      - name: Upload rendered book
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # pin-audit:2026-10-02 043fb46 | v7.0.1
+        with:
+          name: docs-book
+          path: docs/book
+          if-no-files-found: error
+          retention-days: 14

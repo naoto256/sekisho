@@ -1,0 +1,338 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write     # create GitHub Release, upload assets
+  packages: write     # push to GHCR
+  id-token: write     # cosign keyless signing via GitHub OIDC
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY_IMAGE: ghcr.io/${{ github.repository_owner }}/sekisho
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate: every version-bearing artefact must agree (Cargo.toml,
+  # debian/changelog, git tag, CHANGELOG.md). Drift here is the most common
+  # release-day footgun, so fail fast before a single artefact is built.
+  # ---------------------------------------------------------------------------
+  consistency:
+    name: release consistency check
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
+      tag: ${{ steps.derive.outputs.tag }}
+    steps:
+      - name: Validate manual release ref
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" != "tag" ] || [ "$REQUESTED_TAG" != "$REF_NAME" ]; then
+            echo "::error::Manual release requires a matching tag ref."
+            exit 1
+          fi
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+
+      - name: Derive version from tag
+        id: derive
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=$TAG version=$VERSION"
+
+      - name: Cargo.toml workspace.package.version matches tag
+        env:
+          VERSION: ${{ steps.derive.outputs.version }}
+        run: |
+          set -euo pipefail
+          CARGO_VER=$(awk -F'"' '/^version = "/{print $2; exit}' Cargo.toml)
+          if [ "$CARGO_VER" != "$VERSION" ]; then
+            echo "::error::Cargo.toml version ($CARGO_VER) != tag version ($VERSION)"
+            exit 1
+          fi
+
+      - name: debian/changelog top entry matches tag
+        env:
+          VERSION: ${{ steps.derive.outputs.version }}
+        run: |
+          set -euo pipefail
+          DEB_VER=$(head -n 1 debian/changelog | sed -E 's/^sekisho \(([0-9.]+)-[0-9]+\).*/\1/')
+          if [ "$DEB_VER" != "$VERSION" ]; then
+            echo "::error::debian/changelog top entry ($DEB_VER) != tag version ($VERSION)"
+            exit 1
+          fi
+
+      - name: CHANGELOG.md has matching section
+        env:
+          VERSION: ${{ steps.derive.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! grep -qE "^## \[$VERSION\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is missing '## [$VERSION] - YYYY-MM-DD' section"
+            exit 1
+          fi
+
+  quality:
+    name: quality gate
+    needs: consistency
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  # ---------------------------------------------------------------------------
+  # Linux tarball (sekisho-x.y.z-linux-{amd64,arm64}.tar.gz). Cross-built
+  # via cargo + the standard rustc target triples; arm64 uses cross.
+  # ---------------------------------------------------------------------------
+  linux-tarball:
+    name: linux tarball (${{ matrix.arch }})
+    needs: [consistency, quality]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+
+      - name: Install Rust toolchain (with target)
+        run: |
+          rustup show
+          rustup target add ${{ matrix.target }}
+
+      - name: Install cross compiler (arm64)
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # pin-audit:2026-05-21 e18b497 | v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Build release binaries
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --workspace --locked --target ${{ matrix.target }}
+
+      - name: Stage tarball contents
+        env:
+          VERSION: ${{ needs.consistency.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          STAGE="sekisho-${VERSION}-linux-${ARCH}"
+          mkdir -p "$STAGE/bin" "$STAGE/share"
+          cp "target/${TARGET}/release/sekishod"      "$STAGE/bin/"
+          cp "target/${TARGET}/release/sekisho-cli"   "$STAGE/bin/"
+          cp "target/${TARGET}/release/sekisho-webui" "$STAGE/bin/"
+          cp LICENSE-MIT LICENSE-APACHE README.md     "$STAGE/share/"
+          tar czf "${STAGE}.tar.gz" "$STAGE"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # pin-audit:2026-10-02 043fb46 | v7.0.1
+        with:
+          name: linux-tarball-${{ matrix.arch }}
+          path: "sekisho-*-linux-${{ matrix.arch }}.tar.gz"
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Debian packages: three amd64 .deb files (sekishod, sekisho-cli,
+  # sekisho-webui), built via dpkg-buildpackage in a debian:bookworm
+  # container so the build env matches the .deb's runtime expectations.
+  # ---------------------------------------------------------------------------
+  debian:
+    name: debian (amd64)
+    needs: [consistency, quality]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+
+      - name: Build .deb packages in debian:bookworm
+        env:
+          PLATFORM: linux/amd64
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker run --rm --platform "$PLATFORM" \
+            -v "$PWD:/build" -w /build \
+            debian:bookworm \
+            bash -ec '
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                build-essential debhelper devscripts curl ca-certificates pkg-config
+              curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0 --profile minimal
+              . "$HOME/.cargo/env"
+              export PATH="$HOME/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              test -x /usr/bin/dh
+              # Rust is installed by rustup above rather than apt, so the Debian
+              # package database cannot satisfy the cargo/rustc Build-Depends.
+              dpkg-buildpackage -us -uc -b -d
+              mkdir -p out
+              cp ../*.deb out/
+            '
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # pin-audit:2026-10-02 043fb46 | v7.0.1
+        with:
+          name: debian-amd64
+          path: out/*.deb
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Multi-arch container image, pushed to GHCR with the standard tag
+  # ladder (X.Y.Z, X.Y, X, latest).
+  # ---------------------------------------------------------------------------
+  docker:
+    name: docker multi-arch (GHCR)
+    needs: [consistency, quality]
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # pin-audit:2026-10-02 9901266 | v4.4.0
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # pin-audit:2026-10-02 f87e599 | v4.4.1
+        with:
+          driver-opts: image=docker.io/moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # pin-audit:2026-10-02 dbcb813 | v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tag ladder
+        id: tags
+        env:
+          VERSION: ${{ needs.consistency.outputs.version }}
+        run: |
+          set -euo pipefail
+          MAJOR="${VERSION%%.*}"
+          REST="${VERSION#*.}"
+          MINOR="${REST%%.*}"
+          {
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY_IMAGE }}:${VERSION}"
+            echo "${{ env.REGISTRY_IMAGE }}:${MAJOR}.${MINOR}"
+            echo "${{ env.REGISTRY_IMAGE }}:${MAJOR}"
+            echo "${{ env.REGISTRY_IMAGE }}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push multi-arch image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # pin-audit:2026-10-02 c3c9e26 | v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: true
+          sbom: true
+          github-token: ""
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac  # pin-audit:2026-05-21 398d4b0 | v3.9.1
+
+      - name: Sign image (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${{ env.REGISTRY_IMAGE }}@${DIGEST}"
+
+  # ---------------------------------------------------------------------------
+  # Aggregate every artefact, compute SHA256SUMS, sign each artefact
+  # blob with cosign keyless, extract the matching CHANGELOG.md
+  # section, and publish the GitHub Release.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: publish GitHub Release
+    needs: [consistency, linux-tarball, debian, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # pin-audit:2026-10-02 d23441a | v6.1.0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # pin-audit:2026-10-02 3e5f45b | v8.0.1
+        with:
+          pattern: linux-tarball-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # pin-audit:2026-10-02 3e5f45b | v8.0.1
+        with:
+          pattern: debian-*
+          path: dist
+          merge-multiple: true
+
+      - name: Compute SHA256SUMS
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ls -la
+          sha256sum * > SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac  # pin-audit:2026-05-21 398d4b0 | v3.9.1
+
+      - name: Sign artefacts (keyless, blobs)
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for f in *.tar.gz *.deb SHA256SUMS; do
+            [ -f "$f" ] || continue
+            cosign sign-blob --yes --output-signature "${f}.sig" --output-certificate "${f}.cert" "$f"
+          done
+
+      - name: Extract CHANGELOG section for this release
+        id: notes
+        env:
+          VERSION: ${{ needs.consistency.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Pull lines from `## [VERSION] - DATE` up to (but not including)
+          # the next `## [` heading. awk is more portable than gnu-sed -z.
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\] - " { in_section=1; print; next }
+            in_section && /^## \[/ { exit }
+            in_section { print }
+          ' CHANGELOG.md > release-notes.md
+          echo "----- release-notes.md -----"
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # pin-audit:2026-10-02 efb3536 | v3.0.3
+        with:
+          tag_name: ${{ needs.consistency.outputs.tag }}
+          name: ${{ needs.consistency.outputs.tag }}
+          body_path: release-notes.md
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
+            dist/*.sig
+            dist/*.cert
+          fail_on_unmatched_files: true

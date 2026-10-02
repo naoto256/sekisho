@@ -1,0 +1,50 @@
+# Keep the build context lean — Docker streams every untracked byte to the
+# daemon, and the docs/book + target/ directories alone are >100 MB.
+
+# Build artefacts
+target/
+**/target/
+
+# VCS / editor / scratch
+.git/
+.gitignore
+.githooks/
+.audit/
+.claude/
+.vscode/
+.idea/
+*.swp
+
+# Local-only docs and notes (mirrors .gitignore patterns)
+_*.md
+SEKISHO_OVERVIEW.md
+docs/book/
+
+# Build outputs we never want shipped into the image
+*.db
+*.db-shm
+*.db-wal
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+
+# Debian build leftovers
+debian/.debhelper/
+debian/sekisho/
+debian/sekishod/
+debian/sekisho-cli/
+debian/sekisho-webui/
+debian/files
+debian/*.substvars
+debian/*.log
+*.deb
+*.buildinfo
+*.changes
+*.dsc
+*.tar.gz
+*.tar.xz
+
+# CI runner workspaces
+.github/workflows/*.local.yml

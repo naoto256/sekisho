@@ -1,0 +1,36 @@
+# `cargo audit` configuration.
+#
+# Mirrors `deny.toml`'s `[advisories].ignore` for `rustsec/audit-check@v2`
+# in CI, which does not read `deny.toml`. Keep the two lists in lockstep
+# for the entries `cargo deny` also sees.
+#
+# Two extra ignores below (`RUSTSEC-2023-0071`, `RUSTSEC-2026-0097`) exist
+# ONLY here — `cargo deny` filters them out as stale because they resolve
+# through sqlx-macros-core's build-time-only mysql path (unreachable in
+# our sqlite-only runtime), but `cargo audit` reads the raw Cargo.lock and
+# still surfaces them. Removing the ignores here would leave `cargo audit`
+# failing in CI while `cargo deny` reports clean.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — `rsa` 0.9.x Marvin timing sidechannel, no fix.
+    # Pulled in transitively via sqlx-mysql from sqlx-macros. This project
+    # only uses the sqlx sqlite feature at runtime, so the rsa code path
+    # is never reached. `cargo deny` filters this dep out as unreachable
+    # (hence not mirrored to `deny.toml`), but `cargo audit` reads the
+    # raw lockfile and still surfaces it.
+    "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0097 — `rand` 0.8 unsound with a custom logger. Reached
+    # only via sqlx-* and cookie 0.18. We never install a custom logger,
+    # so the unsound path cannot be hit. Same `cargo deny` / `cargo audit`
+    # asymmetry as above.
+    "RUSTSEC-2026-0097",
+    # RUSTSEC-2024-0370 — `proc-macro-error` unmaintained; compile-time
+    # only via maud_macros, no runtime surface.
+    "RUSTSEC-2024-0370",
+    # RUSTSEC-2025-0134 — `rustls-pemfile` unmaintained (no published
+    # vulnerability). Used by sekisho-webui for cert/key PEM parsing at
+    # startup only. Drop when rustls 0.24 ships with the integrated
+    # parser in `rustls-pki-types`.
+    "RUSTSEC-2025-0134",
+]

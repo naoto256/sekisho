@@ -1,0 +1,25 @@
+[package]
+name = "sekisho-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Interactive JunOS-style shell for Sekisho IAP"
+
+[[bin]]
+name = "sekisho-cli"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-native-certs", "rustls", "json"] }
+sekisho-api-protocol = { path = "../sekisho-api-protocol" }
+sekisho-management-rpk-tls = { path = "../sekisho-management-rpk-tls" }
+rpassword = "7"
+rustyline = "18"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
