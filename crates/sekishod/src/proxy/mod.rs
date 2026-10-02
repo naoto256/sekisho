@@ -40,8 +40,11 @@
 //! top-level navigation, so any cross-origin read is by definition not a
 //! legitimate caller.
 
+mod error_response;
+mod forward;
 pub mod handler;
 pub(super) mod header_boundary;
+mod response_lease;
 pub mod route_client;
 pub mod transform;
 pub mod upstream;
