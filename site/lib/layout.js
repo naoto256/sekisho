@@ -24,6 +24,7 @@ export function shell({
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="google-site-verification" content="S-EqEKp48UJAW41lZX5p1lCX1WOcv23Zq_XZxVzEsNk">
 <title>${esc(title)}</title>
 <link rel="canonical" href="${canonical(permalink)}">
 <meta name="description" content="${esc(description)}">
