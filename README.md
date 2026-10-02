@@ -1,7 +1,8 @@
 # Sekisho — Identity-Aware Proxy in Rust
 
 A single-binary identity-aware proxy that fronts your internal apps with SSO,
-mTLS-grade hygiene, and HA-aware ACME — written in Rust.
+proxy-owned header isolation, verifiable identity assertions, and HA-aware
+ACME — written in Rust.
 
 [![CI](https://github.com/naoto256/sekisho/actions/workflows/ci.yml/badge.svg)](https://github.com/naoto256/sekisho/actions/workflows/ci.yml)
 [![Release](https://github.com/naoto256/sekisho/actions/workflows/release.yml/badge.svg)](https://github.com/naoto256/sekisho/actions/workflows/release.yml)
