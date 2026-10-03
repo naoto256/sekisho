@@ -16,7 +16,9 @@ use crate::state::AppState;
 use super::response_lease::RouteResponseLease;
 use super::{RouteClientCache, WebSocketBudget, websocket};
 
-/// Borrowed per-request forwarding context that is not part of the request.
+/// Borrowed per-request context that [`forward_request`] needs but that is
+/// not part of the request itself. Grouped into one struct purely to keep the
+/// argument list of an already long signature readable.
 #[derive(Clone, Copy)]
 pub(super) struct ForwardingRuntime<'a> {
     pub(super) shutdown_ctl: &'a Arc<crate::shutdown::ShutdownController>,
@@ -38,6 +40,10 @@ pub(super) async fn forward_request(
     runtime: ForwardingRuntime<'_>,
     lease: &mut RouteResponseLease,
 ) -> Result<Response<Body>, StatusCode> {
+    // Prepare the complete assertion before selecting an upstream, rewriting
+    // the request, or adding headers. A legacy session (or an upstream
+    // identity without an explicit email) is therefore a fixed-safe 403 with
+    // no data-plane side effect on both protected and public routes.
     let prepared_identity_claims = if route.enable_signed_identity {
         match session {
             Some(session) => {
@@ -71,6 +77,10 @@ pub(super) async fn forward_request(
         None
     };
 
+    // The selected generation owns the round-robin cursor, so a route mutation
+    // cannot mix counters with a different upstream set. Random selection is
+    // memoryless and does not touch that cursor. Both strategies are
+    // deliberately node-local.
     let idx =
         runtime
             .selection
@@ -78,6 +88,13 @@ pub(super) async fn forward_request(
             .select(route.id, route.to.len(), &route.load_balancing);
     let upstream_base = route.to[idx].clone();
 
+    // Build the same TransformContext both branches need. WebSocket
+    // upgrades used to short-circuit the pipeline entirely, which
+    // meant client-supplied `X-Sekisho-Jwt` / `X-Forwarded-*`
+    // headers reached the upstream unchanged — and the trusted
+    // identity headers were never injected. Now both paths receive
+    // the same context, so `handle_websocket` can apply the safe
+    // corresponding WS pipeline with its own connection-boundary sanitation.
     let client_ip = req
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
@@ -105,6 +122,8 @@ pub(super) async fn forward_request(
         runtime.selection.rewrite.as_ref(),
     )?;
 
+    // A route-enabled WebSocket attempt must satisfy the complete downstream
+    // handshake contract. Malformed attempts fail before any upstream work.
     let websocket_handshake = if route.enable_websocket {
         super::header_boundary::classify_websocket_request(&req)?
     } else {
@@ -152,11 +171,15 @@ pub(super) async fn forward_request(
         route.response_idle_timeout_ms,
     ));
 
+    // 1. Build upstream URI
     let upstream_uri = build_upstream_uri(&upstream_base, req.uri())?;
     let (mut parts, body) = req.into_parts();
     parts.uri = upstream_uri;
+    // 2. Apply the remaining transform pipeline after path rewrite
+    // (strip headers, rewrite host, add proxy/identity headers, route headers).
     state.pipeline.apply_all(&mut parts, route, &ctx);
 
+    // 3. Send to upstream with route-level timeout
     let timeout = std::time::Duration::from_millis(route.timeout_ms);
     match tokio::time::timeout(
         timeout,
@@ -181,6 +204,10 @@ pub(super) async fn forward_request(
     }
 }
 
+/// Single emission point for `sekisho_proxy_upstream_errors_total` so
+/// every error site uses the same metric name and label set. `kind` is
+/// a stable, low-cardinality enum (timeout / route_client_build /
+/// upstream_send); never include error message text — it explodes cardinality.
 fn record_upstream_error(route: &str, kind: &'static str) {
     counter!(
         "sekisho_proxy_upstream_errors_total",
@@ -190,6 +217,10 @@ fn record_upstream_error(route: &str, kind: &'static str) {
     .increment(1);
 }
 
+/// Walk either HTTP client's error chain looking for the typed local body
+/// limit marker. Both clients must classify this before their generic
+/// upstream-send branch so a client upload rejection is never counted as an
+/// upstream failure.
 fn request_body_limit_exceeded(error: &(dyn std::error::Error + 'static)) -> bool {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(error) = source {
@@ -204,6 +235,12 @@ fn request_body_limit_exceeded(error: &(dyn std::error::Error + 'static)) -> boo
     false
 }
 
+/// Log and count an upload cut off at the proxy's body limit.
+///
+/// Kept separate from the generic upstream-failure path so the metric means
+/// one thing: the client sent too much, not that the upstream broke. Both HTTP
+/// clients call this from their own limit branch, and only one of them runs
+/// for any given request, so a rejection is counted exactly once.
 fn record_request_body_limit(route: &Route) {
     tracing::warn!(
         route = %route.name,
@@ -227,6 +264,27 @@ async fn send_upstream(
     public_host: &str,
     route_clients: &RouteClientCache,
 ) -> Result<Response<Body>, StatusCode> {
+    // Use the per-route reqwest client whenever the route needs
+    // cert-verification relaxation OR host authority rewriting.
+    // host_rewrite has to go through this path even without
+    // tls_skip_verify, because the rewrite must reshape the URL
+    // authority (so that H2's `:authority` pseudo-header agrees
+    // with the rewritten Host) and pin the TCP target via
+    // `resolve()` — neither of which the raw hyper legacy client
+    // supports.
+    //
+    // route_client also handles the `preserve_host_header: true`
+    // implicit-rewrite case (sync URL authority to `route.from`'s
+    // hostname so `:authority` and `Host` agree under H2 — RFC 9113
+    // §8.3.1). The strict-H2 regression that motivated this hits
+    // routes that already entered route_client via `tls_skip_verify`
+    // (HTTPS to an internal IP appliance), so the gating below is
+    // unchanged from the original `host_rewrite` fix. Routes with neither
+    // `tls_skip_verify` nor `host_rewrite` that hit a strict H2
+    // upstream would also benefit from route_client; we leave that
+    // out of scope here to keep this fix narrow, since the legacy
+    // hyper path has independent considerations (TCP-target pinning,
+    // pool sharing) and no operator-reported regression yet.
     let needs_route_client = route.tls_skip_verify || route.host_rewrite.is_some();
     if needs_route_client {
         let method_str = parts.method.to_string();
@@ -243,6 +301,30 @@ async fn send_upstream(
             reqwest::Method::from_bytes(method_str.as_bytes()).unwrap_or(reqwest::Method::GET),
             url,
         );
+        // Skip Host whenever the URL authority has been rewritten —
+        // that's the case where the URL-derived `:authority` (under
+        // H2) or the URL's host (under H1) is already carrying the
+        // value we want the upstream to see, and forwarding a separate
+        // Host header would either duplicate it (H2: trips RFC 9113
+        // §8.3.1 on strict upstreams like nginx → 400 with empty
+        // request line in access.log) or risk diverging from it.
+        //
+        // Two paths set `authority_rewritten`:
+        //   1. Explicit `host_rewrite` (the original fix).
+        //   2. `preserve_host_header: true` with no `host_rewrite` —
+        //      route_client rewrites the URL authority to
+        //      `route.from`'s hostname so `:authority` matches the
+        //      inbound Host on the wire.
+        //
+        // When the authority is *not* rewritten (e.g. a tls_skip_verify
+        // route with `preserve_host_header: false` against an internal
+        // IP appliance), the URL authority is the backend's own IP.
+        // Stripping Host there would surface `Host: 192.0.2.16` to
+        // the appliance and break Host-derived redirect URLs (many
+        // network appliances emit `Location: https://<own-IP>/...`).
+        // Preserving the original Host on that branch keeps the
+        // appliance's notion of itself aligned with the public
+        // hostname.
         let skip_host_header = route_client.authority_rewritten;
         for (key, value) in &parts.headers {
             if skip_host_header && key == axum::http::header::HOST {
@@ -253,6 +335,14 @@ async fn send_upstream(
             }
         }
         if !hyper::body::Body::is_end_stream(&body) {
+            // The router's observed body-limit adapter remains the byte-budget
+            // authority. Passing its body through as a stream preserves
+            // backpressure and avoids retaining and copying the full upload.
+            // Streaming bodies are intentionally not replayable by reqwest.
+            // A declared `Content-Length` above the cap fails before the
+            // upstream connection is opened; unknown-size and chunked
+            // uploads may forward up to the cap and surface the same 413
+            // mid-stream.
             req_builder = req_builder.body(reqwest::Body::wrap_stream(body.into_data_stream()));
         }
         let resp = match req_builder.send().await {
@@ -262,6 +352,8 @@ async fn send_upstream(
                 return Err(StatusCode::PAYLOAD_TOO_LARGE);
             }
             Err(error) => {
+                // reqwest's Display is shallow — chain through .source() so we
+                // see which layer actually broke (TLS? connect? H2 frame?).
                 let mut chain = Vec::new();
                 let mut source: Option<&dyn std::error::Error> = Some(&error);
                 while let Some(error) = source {
@@ -287,9 +379,21 @@ async fn send_upstream(
         );
         let received_version = resp.version();
         let mut resp_headers = resp.headers().clone();
+        // Drop RFC 7230 §6.1 hop-by-hop headers BEFORE we add our
+        // own Via, so the proxy's contribution survives even if
+        // upstream tried to pass through a hop-by-hop Via somehow.
+        // reqwest/hyper has already decoded the upstream transfer
+        // framing. Transfer-Encoding is hop-by-hop, so it is not
+        // copied across the proxy boundary; downstream framing is
+        // chosen by Hyper.
         super::header_boundary::sanitize_hop_by_hop(&mut resp_headers);
         super::transform::append_via_to_response(&mut resp_headers, received_version);
         super::transform::rewrite_response_location(&mut resp_headers, route, public_host);
+        // Current reqwest build enables none of
+        // gzip/brotli/deflate/zstd, so `bytes_stream` is not
+        // auto-decompressed; `Content-Length` is copied if present.
+        // Re-audit header/body forwarding if reqwest features or
+        // client configuration change.
         let body = Body::from_stream(resp.bytes_stream());
         let mut builder = Response::builder().status(status.as_u16());
         for (key, value) in &resp_headers {
@@ -299,6 +403,7 @@ async fn send_upstream(
             .body(body)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
     } else {
+        // Standard hyper client
         let upstream_req = Request::from_parts(parts, body);
         let resp = match state.client.request(upstream_req).await {
             Ok(response) => response,
@@ -327,6 +432,13 @@ async fn send_upstream(
 }
 
 /// Join an upstream base URL with the incoming path and query.
+///
+/// The base's trailing slash is trimmed because `route.to` is written both
+/// ways by operators and the path always starts with one; without the trim
+/// every such route would produce a `//` prefix that some upstreams treat as
+/// a distinct path. The path component has already been canonicalized and
+/// re-encoded upstream of here, so this is a concatenation, not a place to
+/// re-sanitize.
 ///
 /// Shared with the WebSocket path, hence `pub` through the handler re-export.
 pub fn build_upstream_uri(base: &str, original: &Uri) -> Result<Uri, StatusCode> {
