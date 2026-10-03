@@ -38,6 +38,9 @@ override_dh_auto_test:
 
 # The daemon is enabled normally. The Web UI is an optional management
 # client and must remain opt-in after package installation.
+# Keep dh_installsystemd as the sole installer for both unit files. Installing
+# them again via *.install adds both /lib and /usr/lib paths to the archive,
+# which are the same directory on merged-/usr systems and breaks upgrades.
 override_dh_installsystemd:
 	dh_installsystemd -psekishod
 	dh_installsystemd -psekisho-webui --no-enable --no-start
