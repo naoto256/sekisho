@@ -178,10 +178,10 @@ jobs:
 
           for _ in $(seq 1 30); do
             docker logs "$webui_id" >"$run_dir/webui.log" 2>&1
-            grep -q 'server version matches' "$run_dir/webui.log" && break
+            grep -q 'sekisho server API is compatible' "$run_dir/webui.log" && break
             sleep 1
           done
-          grep -q 'server version matches' "$run_dir/webui.log"
+          grep -q 'sekisho server API is compatible' "$run_dir/webui.log"
           grep -q '127.0.0.1:9444' "$run_dir/webui.log"
 
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
