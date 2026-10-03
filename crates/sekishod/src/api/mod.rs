@@ -708,15 +708,15 @@ async fn host_info() -> impl IntoResponse {
     axum::Json(serde_json::json!({ "hostname": hostname }))
 }
 
-/// Return the server's crate version. Clients call this at startup
-/// to refuse connecting to a mismatched server — in the version-locked
-/// model, the server owns data and integrity while the client owns
-/// the domain semantics, so the pair must ship together. Unauthenticated
-/// on purpose: the version is not a secret and clients need it before
-/// they have credentials.
+/// Return the server's product and management API versions.
+///
+/// Product skew is diagnostic; `api_version` is the compatibility boundary.
+/// Unauthenticated on purpose: neither value is secret and clients need both
+/// before they perform management operations.
 async fn version() -> impl IntoResponse {
     axum::Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
+        "api_version": sekisho_api_protocol::version::API_VERSION,
         "name": env!("CARGO_PKG_NAME"),
     }))
 }
@@ -1423,6 +1423,23 @@ mod endpoint_tests {
             serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null)
         };
         (status, json)
+    }
+
+    #[tokio::test]
+    async fn version_reports_the_shared_api_version_without_auth() {
+        let store = Store::new_for_test_degraded("version-public")
+            .await
+            .unwrap();
+        let (state, _) = build_state(store).await;
+        let router = mk_router(state);
+
+        let (status, body) = get(router, "/.sekisho/api/v1/version").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["api_version"],
+            sekisho_api_protocol::version::API_VERSION
+        );
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[tokio::test]

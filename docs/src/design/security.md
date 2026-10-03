@@ -94,9 +94,12 @@ contracts rather than a test count:
   missing and invalid Basic credentials, the CSRF cookie/meta-token
   relationship, and all six WebUI security headers. Rejected guard
   and CSRF requests are verified not to reach the upstream.
-- `sekisho-cli`'s actual-binary version-handshake test verifies that
-  a server version mismatch stops the client before authenticated
-  configuration or shell work and does not expose the API key.
+- Shared protocol tests cover the legacy missing-field API v1 response,
+  explicit v1, product-version skew and API-version mismatch. CLI and WebUI
+  startup tests require product skew to continue and API skew to stop.
+- `sekisho-cli`'s actual-binary transport test verifies that an invalid
+  plain-HTTP management URL stops the client before any request and does not
+  expose the API key.
 - `sekishod`'s actual-process smoke test reaches the management TLS
   health endpoint, sends `SIGTERM`, and verifies a successful bounded
   exit, ordered shutdown audit events, control-socket cleanup, and

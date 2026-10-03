@@ -7,8 +7,8 @@ want to extend the proxy without breaking it.
 
 ## Crate layout
 
-Sekisho ships three programs, built from one workspace and released
-together so they are always on the same version:
+Sekisho ships three programs, built from one workspace and released together
+under the same product version:
 
 ```text
 sekishod/        The daemon: proxy + management API + ACME client.
@@ -22,10 +22,9 @@ crates that ship inside them rather than on their own —
 share) and `sekisho-management-rpk-tls` (the pinned-key TLS used on
 the management listener).
 
-The three are **version-locked**: every client verifies the server
-version on startup. They then diverge on purpose — `sekisho-cli`
-exits, `sekisho-webui` degrades to a badge. See
-[Version-locked clients](#3-version-locked-clients) below.
+The three share an explicit management API version. Both clients reject an
+incompatible API; a product-version difference is only a warning. See
+[API-version-gated clients](#3-api-version-gated-clients) below.
 
 Within `crates/sekishod/src`:
 
@@ -141,7 +140,7 @@ let route: Route = serde_json::from_value(base)?;
 
 Add a field to a model and the storage code does not change.
 
-### 3. Version-locked clients
+### 3. API-version-gated clients
 
 The daemon exposes only data and integrity: CRUD for every resource,
 plus referential / format / uniqueness checks. It does **not** ship a
@@ -149,15 +148,20 @@ schema API, a resource registry, or any field metadata. Each client
 (`sekisho-cli`, `sekisho-webui`) ships its own compile-time knowledge of
 every resource — the forms, the field types, the nav order, the list
 columns, everything — and on startup calls
-`GET /.sekisho/api/v1/version` to confirm it is talking to a matching
-server. Mismatch is a hard startup failure with a clear message.
+`GET /.sekisho/api/v1/version` to confirm it is talking to a compatible
+management API. API mismatch is a hard startup failure with a clear message;
+product-version skew is reported as a warning and remains usable.
+
+API v1 existed before the response carried an `api_version` field. Clients
+therefore interpret a missing field as v1, while current daemons report
+`api_version: 1` explicitly. Later API versions must report their number.
 
 Why: the earlier scheme served a JSON-Schema tree from the daemon and
 had the clients render a generic CRUD UI from it. That sounded
 decoupled in theory but leaked UI-only concerns back into the data
 model (field visibility flags, nav order, status pills) and still
 produced UX that looked generic. In practice the pair was already
-shipping from the same source tree — making the version lock
+shipping from the same source tree — making the API boundary
 explicit lets each client write the best UX it can for the resources
 it knows.
 
@@ -318,6 +322,7 @@ clients:
 | `crates/sekisho-cli/src/resources.rs`       | Add a `FieldNode` entry for the field.      |
 | `crates/sekisho-webui/src/views/routes.rs`   | Render the field in the create/edit form.   |
 
-Because the clients are version-locked they come along in the same
-release. Adding a field the UI does not need to surface skips this
+The clients normally come along in the same release. The API-version check,
+rather than the product tag, prevents a client from using an incompatible
+resource contract. Adding a field the UI does not need to surface skips this
 client step entirely.

@@ -4,8 +4,8 @@
 //! compile-time knowledge of every resource and field ([`resources`]) rather
 //! than discovering the schema at runtime: client and server ship together, so
 //! a compiled-in table gives better completion and better forms than anything
-//! derived from a schema document, and the version handshake below is what
-//! keeps it honest.
+//! derived from a schema document. The API-version handshake below keeps that
+//! compiled knowledge honest while product-version skew remains diagnostic.
 //!
 //! ## Refusals happen before credentials move
 //!
@@ -31,10 +31,8 @@ mod table;
 mod timefmt;
 mod version;
 
-/// Compile-time tag used to refuse connecting to a server that ships
-/// with a different build. The shell's resource table is version-
-/// locked to the server it was built against, so a mismatch means
-/// the shell is probably describing fields that moved.
+/// Compile-time product version used for diagnostics. Management compatibility
+/// is gated separately by `sekisho_api_protocol::version::API_VERSION`.
 pub(crate) const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use clap::Parser;
@@ -137,29 +135,12 @@ async fn main() {
         }
     };
 
-    async fn verify_server_version(client: &api::ApiClient) -> Result<(), String> {
+    async fn verify_server_version(client: &api::ApiClient) -> Result<Option<String>, String> {
         // `/version` is deliberately unauthenticated so this check
-        // survives auth errors — we want a clear "version mismatch"
+        // survives auth errors — we want a clear API-version mismatch
         // message, not a confusing 401.
-        match client.get("/version").await {
-            Ok(v) => {
-                let server_version = v
-                    .get("version")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("<unknown>");
-                if server_version != CLIENT_VERSION {
-                    Err(format!(
-                        "server is {server_version}, sekisho-cli is {CLIENT_VERSION}. \
-                         The shell's resource knowledge is version-locked to the \
-                         server it was built against — rebuild / reinstall the \
-                         matching sekisho-cli binary."
-                    ))
-                } else {
-                    Ok(())
-                }
-            }
-            Err(e) => Err(format!("could not reach /version: {e}")),
-        }
+        let verdict = version::probe(client).await;
+        version::startup_check(&verdict)
     }
 
     if !cli.local_auth {
@@ -172,10 +153,13 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        if let Err(msg) = verify_server_version(&client).await {
-            eprintln!("version mismatch: {msg}");
-            std::process::exit(1);
-        }
+        let version_warning = match verify_server_version(&client).await {
+            Ok(warning) => warning,
+            Err(msg) => {
+                eprintln!("compatibility check failed: {msg}");
+                std::process::exit(1);
+            }
+        };
         match client.get("/_internal/host").await {
             Ok(_) => eprintln!("ok"),
             Err(e) => {
@@ -183,13 +167,19 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        if let Some(warning) = version_warning {
+            eprintln!("warning: {warning}");
+        }
     } else {
-        // Local auth path still needs the version check — an operator
-        // SSH'd onto a box with a stale `sekisho-cli` binary would
-        // otherwise silently drive it against a newer server.
-        if let Err(msg) = verify_server_version(&client).await {
-            eprintln!("version mismatch: {msg}");
-            std::process::exit(1);
+        // Local auth still needs the API compatibility check before the shell
+        // can issue management operations.
+        match verify_server_version(&client).await {
+            Ok(Some(warning)) => eprintln!("warning: {warning}"),
+            Ok(None) => {}
+            Err(msg) => {
+                eprintln!("compatibility check failed: {msg}");
+                std::process::exit(1);
+            }
         }
     }
 

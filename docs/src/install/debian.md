@@ -47,13 +47,12 @@ and the management API are the same surface.
 
 ## Keeping the three in step
 
-All three check the daemon's `/version` at startup. `sekisho-cli` exits
-on a mismatch. The web UI loads anyway and shows the mismatch as a
-badge, because an operator is often there *because* something is wrong
-and refusing would take away the tool they would use to fix it.
+Both clients check the daemon's `/version` at startup. A product-version
+difference produces a warning, while an incompatible management API version
+stops the client before it issues management operations.
 
 Upgrade the three together. See
-[Architecture](../design/architecture.md) § Version-locked clients.
+[Architecture](../design/architecture.md) § API-version-gated clients.
 
 ## Next
 

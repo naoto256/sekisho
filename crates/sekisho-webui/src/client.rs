@@ -8,6 +8,32 @@ use serde_json::Value;
 
 use crate::auth::SharedCredential;
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub(crate) enum VersionProbeError {
+    #[error("GET /version failed: {0}")]
+    Unreachable(String),
+    #[error("invalid /version response: {0}")]
+    InvalidResponse(String),
+}
+
+fn classify_version_http_response(
+    status: reqwest::StatusCode,
+    text: &str,
+    client_product_version: &str,
+) -> std::result::Result<sekisho_api_protocol::version::VersionCompatibility, VersionProbeError> {
+    if !status.is_success() {
+        return Err(VersionProbeError::InvalidResponse(format!(
+            "GET /version returned {status}: {text}"
+        )));
+    }
+    let value: serde_json::Value = serde_json::from_str(text)
+        .map_err(|error| VersionProbeError::InvalidResponse(format!("decode JSON: {error}")))?;
+    Ok(sekisho_api_protocol::version::classify_version_response(
+        &value,
+        client_product_version,
+    ))
+}
+
 /// Build a `reqwest::Client` configured for talking to the Sekisho
 /// management API. Every management call uses the same out-of-band pin.
 pub(crate) fn http_client(pin: &ManagementRpkPin) -> anyhow::Result<reqwest::Client> {
@@ -208,27 +234,24 @@ impl SekishoClient {
         Ok(())
     }
 
-    /// Fetch `/version` without sending Authorization. Used at startup
-    /// to gate a version-lock check; the endpoint is explicitly public
-    /// server-side so that operators can diagnose a mismatched pair
-    /// without first fighting through auth errors.
-    pub async fn get_unauthenticated_version(&self) -> Result<String> {
+    /// Fetch and classify `/version` without sending Authorization. Used at
+    /// startup to reject an incompatible API while retaining product-version
+    /// skew as an operator-visible warning.
+    pub(crate) async fn get_unauthenticated_version(
+        &self,
+        client_product_version: &str,
+    ) -> std::result::Result<sekisho_api_protocol::version::VersionCompatibility, VersionProbeError>
+    {
         let resp = self
             .http
             .get(self.url("/version"))
             .send()
             .await
-            .context("GET /version failed")?;
-        let (status, text) = read_bounded_text(resp).await?;
-        if !status.is_success() {
-            return Err(anyhow!("GET /version -> {status}: {text}"));
-        }
-        let v: serde_json::Value =
-            serde_json::from_str(&text).with_context(|| format!("decode /version: {text}"))?;
-        v.get("version")
-            .and_then(|x| x.as_str())
-            .map(String::from)
-            .ok_or_else(|| anyhow!("/version response missing `version` field: {text}"))
+            .map_err(|error| VersionProbeError::Unreachable(error.to_string()))?;
+        let (status, text) = read_bounded_text(resp)
+            .await
+            .map_err(|error| VersionProbeError::InvalidResponse(error.to_string()))?;
+        classify_version_http_response(status, &text, client_product_version)
     }
 
     /// Fetch a complete list resource. Paginated Sekisho responses are
@@ -330,6 +353,24 @@ impl SekishoClient {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn malformed_version_payload_is_invalid_response() {
+        let error = classify_version_http_response(reqwest::StatusCode::OK, "not-json", "0.1.1")
+            .unwrap_err();
+        assert!(matches!(error, VersionProbeError::InvalidResponse(_)));
+    }
+
+    #[test]
+    fn non_success_version_response_is_invalid_response() {
+        let error = classify_version_http_response(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"not ready"}"#,
+            "0.1.1",
+        )
+        .unwrap_err();
+        assert!(matches!(error, VersionProbeError::InvalidResponse(_)));
+    }
 
     #[derive(Clone, Copy)]
     enum RedirectTarget {

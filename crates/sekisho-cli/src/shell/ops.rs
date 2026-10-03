@@ -48,7 +48,7 @@ pub(super) async fn cmd_create_api_key(client: &ApiClient, name: &str, scopes: &
 ///
 /// The server treats `enabled` as a plain flag and has no ACME
 /// lifecycle of its own — that orchestration lives here because only
-/// the shell (with its version-locked knowledge of the data model)
+/// the shell (with its API-version-gated knowledge of the data model)
 /// can tell what "ready to enable" means for a given route.
 ///
 /// Enable flow:
@@ -200,10 +200,9 @@ pub(super) async fn cmd_show(client: &ApiClient, parts: &[&str]) {
         return;
     }
 
-    // `version` is a pseudo-resource: dump CLI vs. daemon build tags
-    // without going through the resource registry. Shares its
-    // match / mismatch / unreachable logic with the startup handshake
-    // in main.rs so the operator sees the same words in both places.
+    // `version` is a pseudo-resource: show product and management API
+    // compatibility without going through the resource registry. It shares
+    // its verdicts with the startup handshake in main.rs.
     if resource == "version" {
         let verdict = crate::version::probe(client).await;
         // Colorize only when stdout is a TTY — piping `show version`

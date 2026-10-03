@@ -370,10 +370,11 @@ sekisho@iap> show api-key
 
 ## Upgrading
 
-`sekishod`, `sekisho-cli`, and `sekisho-webui` are version-locked and
-must be upgraded together. Read the release notes for version-specific
-steps. In an HA deployment, upgrade one node at a time and confirm that
-it is ready before moving to the next node.
+`sekishod`, `sekisho-cli`, and `sekisho-webui` are released together and
+should normally be upgraded together. Product-version skew is allowed with a
+warning; management API-version skew is rejected. Read the release notes for
+version-specific steps. In an HA deployment, upgrade one node at a time and
+confirm that it is ready before moving to the next node.
 
 ## Restart costs
 

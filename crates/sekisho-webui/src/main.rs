@@ -10,16 +10,14 @@
 //! It was removed: UI-only concerns leaked into the server's data model while
 //! the client still hard-coded per-resource behaviour anyway, so the split
 //! bought neither decoupling nor a good UI. Now each resource owns its own
-//! handlers and views, and the startup `/version` handshake is what keeps the
+//! handlers and views, and the startup API-version handshake keeps the
 //! compiled-in knowledge honest.
 //!
-//! ## A version mismatch degrades, it does not refuse
+//! ## Product skew warns; API skew refuses
 //!
-//! Unlike the CLI, which exits, the web UI records the outcome in
-//! [`ServerVersion`] and renders a badge. The reasoning is that the operator
-//! is often here *because* something is wrong, and a UI that refuses to load
-//! removes the tool they would use to fix it. A matching pair renders nothing
-//! at all — silence is the right output when there is nothing to say.
+//! A product-version mismatch is recorded in [`ServerVersion`] and rendered as
+//! a badge. An API-version mismatch refuses startup because the UI's compiled
+//! resource knowledge is unsafe against an incompatible management contract.
 //!
 //! ## Binds loopback, and does not share the daemon's database
 //!
@@ -49,9 +47,8 @@ use crate::client::SekishoClient;
 use crate::config::Args;
 use crate::yaml_config::WebuiConfig;
 
-/// Compile-time build tag; checked against the server's `/version`
-/// response on startup. Clients refuse to run against a mismatched
-/// server because the resource registry is version-locked.
+/// Compile-time product version used for diagnostics. Management compatibility
+/// is gated separately by `sekisho_api_protocol::version::API_VERSION`.
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Version-handshake outcome captured at startup. Held in `AppState`
@@ -63,8 +60,7 @@ const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub enum ServerVersion {
     /// Server reported a version that matches `CLIENT_VERSION` exactly.
     Match,
-    /// Server reported a different version. Stored verbatim so the
-    /// badge can show both ends of the drift.
+    /// Server reported a different product version but a compatible API.
     Mismatch(String),
     /// `/version` was unreachable at startup (server still booting,
     /// network blip). Sekisho refuses to hard-fail on this so the UI
@@ -90,6 +86,28 @@ pub struct AppState {
     /// any future reconcile-tick writer is negligible.
     pub server_version: Arc<RwLock<ServerVersion>>,
     pub management_rpk_pin: Arc<sekisho_api_protocol::management_rpk::ManagementRpkPin>,
+}
+
+fn server_version_state(
+    compatibility: sekisho_api_protocol::version::VersionCompatibility,
+) -> Result<ServerVersion> {
+    use sekisho_api_protocol::version::{API_VERSION, VersionCompatibility};
+
+    match compatibility {
+        VersionCompatibility::Match => Ok(ServerVersion::Match),
+        VersionCompatibility::ProductMismatch { server_version } => {
+            Ok(ServerVersion::Mismatch(server_version))
+        }
+        VersionCompatibility::ApiMismatch {
+            server_api_version, ..
+        } => Err(anyhow!(
+            "management API version mismatch: sekisho-webui supports v{API_VERSION}, \
+             daemon reports v{server_api_version}"
+        )),
+        VersionCompatibility::InvalidResponse { reason } => {
+            Err(anyhow!("invalid /version response: {reason}"))
+        }
+    }
 }
 
 #[tokio::main]
@@ -140,29 +158,37 @@ async fn main() -> Result<()> {
         &management_rpk_pin,
     )?;
 
-    // Version handshake: surface the result through a nav badge rather
-    // than refusing to start. Mismatched pairs are still loud — the
-    // operator sees the badge on every page and the warning log
-    // points them at the matching binary — but a mid-rolling-deploy
-    // node should still serve its UI so the operator can see what
-    // happened.
-    let server_version = match client.get_unauthenticated_version().await {
-        Ok(v) if v == CLIENT_VERSION => {
-            tracing::info!(version = %v, "sekisho server version matches");
-            ServerVersion::Match
+    // Product-version skew remains visible during rolling upgrades, while an
+    // incompatible API fails before the UI can issue management operations.
+    let server_version = match client.get_unauthenticated_version(CLIENT_VERSION).await {
+        Ok(compatibility) => {
+            let state = server_version_state(compatibility)?;
+            match &state {
+                ServerVersion::Match => {
+                    tracing::info!(
+                        product_version = CLIENT_VERSION,
+                        api_version = sekisho_api_protocol::version::API_VERSION,
+                        "sekisho server API is compatible"
+                    );
+                }
+                ServerVersion::Mismatch(server_version) => {
+                    tracing::warn!(
+                        client_version = CLIENT_VERSION,
+                        server_version = %server_version,
+                        api_version = sekisho_api_protocol::version::API_VERSION,
+                        "product version differs; management API is compatible, continuing"
+                    );
+                }
+                ServerVersion::Unreachable => {}
+            }
+            state
         }
-        Ok(v) => {
-            tracing::warn!(
-                client_version = CLIENT_VERSION,
-                server_version = %v,
-                "version mismatch: the UI ships with a version-locked resource model; rebuild / \
-                 reinstall the matching sekisho-webui binary"
-            );
-            ServerVersion::Mismatch(v)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "could not reach /version at startup — proceeding");
+        Err(client::VersionProbeError::Unreachable(reason)) => {
+            tracing::warn!(error = %reason, "could not reach /version at startup — proceeding");
             ServerVersion::Unreachable
+        }
+        Err(client::VersionProbeError::InvalidResponse(reason)) => {
+            return Err(anyhow!(reason));
         }
     };
 
@@ -252,4 +278,42 @@ async fn main() -> Result<()> {
         axum::serve(listener, app).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sekisho_api_protocol::version::{API_VERSION, VersionCompatibility};
+
+    #[test]
+    fn product_mismatch_keeps_the_ui_available() {
+        let state = server_version_state(VersionCompatibility::ProductMismatch {
+            server_version: "9.9.9".to_string(),
+        })
+        .unwrap();
+        assert!(matches!(state, ServerVersion::Mismatch(version) if version == "9.9.9"));
+    }
+
+    #[test]
+    fn api_mismatch_refuses_startup() {
+        let error = server_version_state(VersionCompatibility::ApiMismatch {
+            server_version: "0.1.1".to_string(),
+            server_api_version: API_VERSION + 1,
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("management API version mismatch")
+        );
+    }
+
+    #[test]
+    fn malformed_version_response_refuses_startup() {
+        let error = server_version_state(VersionCompatibility::InvalidResponse {
+            reason: "bad api_version".to_string(),
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid /version response"));
+    }
 }
