@@ -31,6 +31,7 @@ use serde_json::Value;
 
 pub mod api_paths;
 pub mod management_rpk;
+pub mod version;
 
 /// One successfully decoded management-API collection page.
 ///

@@ -14,8 +14,8 @@ import { url } from "./config.js";
  * change of renderer — otherwise every `#some-heading` link in the book
  * silently stops landing. mdBook keeps letters, digits, `_`, `-` and spaces,
  * turns spaces into hyphens, and lowercases; notably it *drops* punctuation
- * rather than encoding it, so `### 3. Version-locked clients` is
- * `3-version-locked-clients` and not `3.-version-locked-clients`.
+ * rather than encoding it, so `### 3. API-version-gated clients` is
+ * `3-api-version-gated-clients` and not `3.-api-version-gated-clients`.
  *
  * markdown-it-anchor appends `-1`, `-2`, … to duplicates, which is also what
  * mdBook does, so collisions need no special handling here.

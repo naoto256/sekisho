@@ -1,16 +1,16 @@
-//! Version-locked resource registry.
+//! API-version-gated resource registry.
 //!
 //! sekisho-webui's UI knowledge of every Sekisho resource is compiled in.
 //! That matches sekisho-cli's approach and completes the "server is
 //! data-plus-integrity only, clients ship with matching domain
 //! knowledge" architecture. There is no runtime fetch of schemas or
-//! descriptors; a sekisho-webui binary is married to the server version
-//! it was built against.
+//! descriptors; a sekisho-webui binary must speak the server's management API
+//! version even when their product versions differ.
 //!
 //! Adding a resource server-side therefore *does* require rebuilding
 //! sekisho-webui. The previous dynamic-discovery scheme sounded nice in
 //! theory but leaked UI concerns back into the server — the split was
-//! a fiction. With `GET /version` gating startup, version drift now
+//! a fiction. With `GET /version` gating startup, API drift now
 //! surfaces as a clear refusal rather than a subtly broken form.
 
 /// One entry in the navigation bar. Every field is `&'static str` — this

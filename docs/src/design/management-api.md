@@ -20,8 +20,10 @@ loopback is a per-instance setting with rules of its own; see
 [Per-instance settings](../configuration/instance.md).
 
 `GET /.sekisho/api/v1/version` needs no credential and is the first
-call every client makes. Clients are version-locked to the daemon and
-must stop on a mismatch rather than guess.
+call every client makes. It reports both the product version and
+`api_version: 1`. A missing `api_version` is the legacy API v1 shape;
+later API versions must report their number. Product-version skew warns,
+but an API-version mismatch stops the client rather than guessing.
 
 ## Authenticating
 

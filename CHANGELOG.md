@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Negotiate an explicit management API version so product-version skew only
+  warns while incompatible API versions are rejected by the CLI and Web UI.
+
 ### Fixed
 
 - Install each systemd unit only once in Debian packages so installation and

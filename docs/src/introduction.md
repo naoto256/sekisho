@@ -83,11 +83,11 @@ web UI, and an interactive shell.
 
 All three ship from the same source tree but as **three separate `.deb`
 packages** so you can install only what each host needs (e.g. `sekishod`
-alone on a proxy peer, `sekisho-cli` on an admin workstation). They are
-deliberately version-locked: every client checks the daemon's `/version`
-on startup. `sekisho-cli` refuses to run against a mismatched build; the
-web UI loads anyway and marks the mismatch, because refusing would take
-away the tool you would use to fix it.
+alone on a proxy peer, `sekisho-cli` on an admin workstation). They share
+an explicit management API version: every client checks the daemon's
+`/version` on startup. A product-version difference produces a warning,
+while an API-version difference stops both clients before they issue
+management operations.
 You can still drive Sekisho directly from `curl`, a config-management
 tool, or Terraform — the management API is a stable, documented HTTP
 contract — but the shipped clients expect to travel with the daemon.
@@ -98,7 +98,7 @@ contract — but the shipped clients expect to travel with the daemon.
   to a working SSO-protected route in about ten minutes.
 - [Architecture](./design/architecture.md) explains the internal structure and
   the design principles (registry pattern, JSON Merge Patch,
-  version-locked clients) that keep the codebase small as features
+  API-version-gated clients) that keep the codebase small as features
   are added.
 - [Configuration](./configuration/index.md) is the reference for the
   data model and the management API.

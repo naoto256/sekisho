@@ -1,16 +1,16 @@
 //! End-to-end tests around the CLI's startup handshake.
 //!
-//! Client and server ship together and are version-locked, and the stub server
-//! here is deliberately configured with a mismatching version. The test that
-//! exists, however, pins something that happens *earlier*: given a plain-HTTP
+//! Client and server negotiate a management API version. The stub server here
+//! carries a different product version, but the test pins something that
+//! happens *earlier*: given a plain-HTTP
 //! management URL the binary exits non-zero, writes nothing to stdout, and
 //! never sends a request — so the API key cannot reach a connection that was
 //! not the pinned TLS one. Noticing after the bytes are on the wire would be
 //! too late.
 //!
-//! Note the gap implied by the filename: because the transport refusal
-//! short-circuits first, no test here currently reaches the version exchange,
-//! so the mismatch refusal itself is not covered end to end.
+//! Because the transport refusal short-circuits first, no test here reaches the
+//! version exchange. API compatibility is covered by the shared protocol and
+//! client startup unit tests.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;

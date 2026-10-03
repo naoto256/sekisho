@@ -108,7 +108,7 @@ async fn fetch_server_hostname(client: &ApiClient) -> String {
 }
 
 pub async fn run(client: ApiClient) {
-    // Resource registry is version-locked and compile-time — see
+    // Resource registry is API-version-gated and compile-time — see
     // `crate::resources`. Startup only needs the instance-name prefetch
     // (what's on the server right now) for tab completion.
     prefetch_all_names(&client).await;

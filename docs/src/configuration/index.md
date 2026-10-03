@@ -72,8 +72,8 @@ Tab completion covers every resource and every field, and works
 offline — it does not round-trip the daemon, so it is as fast on a
 slow link as on localhost.
 
-It is only correct if the shell and the daemon are the same version.
-They ship together and `sekisho-cli` checks at startup, refusing to
-connect to a daemon that does not match rather than completing fields
-that may not exist. See
-[Architecture](../design/architecture.md#3-version-locked-clients).
+It is only correct while the shell and daemon speak the same management API
+version. They normally ship together, and `sekisho-cli` checks compatibility
+at startup: product-version skew warns, while API-version skew is refused
+rather than completing fields that may not exist. See
+[Architecture](../design/architecture.md#3-api-version-gated-clients).
