@@ -192,6 +192,44 @@ jobs:
               cp ../*.deb out/
             '
 
+      - name: Verify install and same-version reinstall on merged-/usr
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(
+            out/sekishod_*.deb
+            out/sekisho-cli_*.deb
+            out/sekisho-webui_*.deb
+          )
+          test "${#packages[@]}" -eq 3
+          test "$(readlink -f /lib)" = /usr/lib
+
+          check_unit_once() {
+            package="$1"
+            unit="$2"
+            count=0
+            while IFS= read -r path; do
+              case "$path" in
+                "./lib/systemd/system/$unit"|"./usr/lib/systemd/system/$unit")
+                  count=$((count + 1))
+                  ;;
+              esac
+            done < <(dpkg-deb --fsys-tarfile "$package" | tar -tf -)
+            test "$count" -eq 1
+          }
+
+          check_unit_once out/sekishod_*.deb sekishod.service
+          check_unit_once out/sekisho-webui_*.deb sekisho-webui.service
+
+          sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "${packages[@]}"
+          sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "${packages[@]}"
+
+          test -x /usr/bin/sekishod
+          test -x /usr/bin/sekisho-cli
+          test -x /usr/bin/sekisho-webui
+          test -f /usr/lib/systemd/system/sekishod.service
+          test -f /usr/lib/systemd/system/sekisho-webui.service
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # pin-audit:2026-10-02 043fb46 | v7.0.1
         with:
           name: debian-amd64

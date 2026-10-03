@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Install each systemd unit only once in Debian packages so installation and
+  same-version reinstallation work on merged-/usr systems.
+
 ## [0.1.0] - 2026-09-30
 
 Initial release.
