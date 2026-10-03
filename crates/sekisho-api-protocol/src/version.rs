@@ -15,17 +15,20 @@ const LEGACY_API_VERSION: u64 = 1;
 /// Compatibility of one daemon `/version` response with this client build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionCompatibility {
+    /// Same API version and same product version.
     Match,
-    ProductMismatch {
-        server_version: String,
-    },
+    /// Same API version, different product version. Usable; callers surface
+    /// the skew to the operator.
+    ProductMismatch { server_version: String },
+    /// Different API version. Checked before the product version, so a caller
+    /// never sees `ProductMismatch` for an incompatible API.
     ApiMismatch {
         server_version: String,
         server_api_version: u64,
     },
-    InvalidResponse {
-        reason: String,
-    },
+    /// The response cannot establish compatibility: `version` is missing or
+    /// not a string, or `api_version` is present but not a `u64`.
+    InvalidResponse { reason: String },
 }
 
 /// Classify a decoded daemon `/version` response.

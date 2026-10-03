@@ -23,7 +23,9 @@ loopback is a per-instance setting with rules of its own; see
 call every client makes. It reports both the product version and
 `api_version: 1`. A missing `api_version` is the legacy API v1 shape;
 later API versions must report their number. Product-version skew warns,
-but an API-version mismatch stops the client rather than guessing.
+but an API-version mismatch stops the client rather than guessing. Failure to
+reach, read or classify `/version` also stops startup; compatibility is
+established before credentials are sent or a local-auth exchange begins.
 
 ## Authenticating
 

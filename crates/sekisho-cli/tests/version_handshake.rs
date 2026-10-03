@@ -279,20 +279,22 @@ fn actual_binary_rejects_plain_http_before_any_request() {
 #[test]
 fn startup_auth_probe_is_the_internal_read_endpoint() {
     let main_source = include_str!("../src/main.rs");
+    let version = main_source
+        .find("verify_server_version(&version_client)")
+        .expect("startup version probe");
+    let local_auth = main_source
+        .find("local_auth_challenge(&cli.url")
+        .expect("local-auth exchange");
     let health = main_source
         .find("client.get(\"/health\")")
         .expect("startup health probe");
-    let version = main_source[health..]
-        .find("verify_server_version(&client)")
-        .map(|offset| health + offset)
-        .expect("startup version probe");
-    let authentication = main_source[version..]
+    let authentication = main_source[health..]
         .find("client.get(\"/_internal/host\")")
-        .map(|offset| version + offset)
+        .map(|offset| health + offset)
         .expect("startup authentication probe");
     assert!(
-        health < version && version < authentication,
-        "startup request order must remain health, version, authentication"
+        version < local_auth && version < health && health < authentication,
+        "version compatibility must precede credential exchange and management probes"
     );
     assert!(
         !main_source.contains("client.get(sekisho_api_protocol::api_paths::CONFIG)"),

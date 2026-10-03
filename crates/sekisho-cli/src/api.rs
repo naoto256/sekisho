@@ -70,6 +70,18 @@ impl ApiClient {
         self.handle(resp).await
     }
 
+    /// GET a public endpoint without attaching the management credential.
+    pub(crate) async fn get_unauthenticated(&self, path: &str) -> Result<Value, String> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        self.handle(resp).await
+    }
+
     /// Fetch every page of a management-API collection.
     pub async fn get_list(&self, path: &str) -> Result<Vec<Value>, String> {
         let mut request_path = path.to_string();

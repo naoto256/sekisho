@@ -38,7 +38,10 @@ pub enum VersionVerdict {
 /// Probe the daemon's `/version` endpoint and classify the result.
 /// Public so `cmd_show` and the startup handshake share one rule.
 pub async fn probe(client: &ApiClient) -> VersionVerdict {
-    match client.get(sekisho_api_protocol::api_paths::VERSION).await {
+    match client
+        .get_unauthenticated(sekisho_api_protocol::api_paths::VERSION)
+        .await
+    {
         Ok(v) => match classify_version_response(&v, CLIENT_VERSION) {
             VersionCompatibility::Match => VersionVerdict::Match,
             VersionCompatibility::ProductMismatch { server_version } => {

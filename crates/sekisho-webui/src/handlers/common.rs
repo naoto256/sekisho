@@ -17,24 +17,23 @@ pub fn render_html(m: Markup) -> Response {
 /// Render a full page, wiring the CSRF token so HTMX requests from this
 /// page carry the right header.
 ///
-/// The server-version snapshot is read from `AppState` and passed
-/// through so the layout's nav badge reflects the latest startup
-/// handshake outcome. Read-locking once per render is cheap — the
-/// state only updates at startup today.
+/// The server-version snapshot is read from `AppState` and passed through so
+/// the layout's nav badge reflects the startup handshake outcome. Read-locking
+/// once per render is cheap; the state is fixed after startup today.
 pub fn render_page(
     state: &AppState,
     user: Option<&AuthenticatedUser>,
     title: &str,
     body: Markup,
 ) -> Response {
-    // Read the version snapshot. `std::sync::RwLock`'s read guard
-    // never yields, so calling it from an async handler is fine; the
-    // only writer is a future reconcile tick that hasn't shipped yet.
+    // `std::sync::RwLock`'s read guard never yields, so calling it from an
+    // async handler is fine. If another thread ever poisons the lock, retain
+    // the compatibility verdict established before the listener was bound.
     let version = state
         .server_version
         .read()
-        .map(|g| g.clone())
-        .unwrap_or(crate::ServerVersion::Unreachable);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     // The CSRF token comes from the per-request task_local set by
     // `csrf::middleware`, *not* from `AppState`. The middleware wrote
     // the cookie value (or a freshly generated one) into the
