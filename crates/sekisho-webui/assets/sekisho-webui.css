@@ -480,7 +480,7 @@ tr.row-retired td { color: var(--sw-muted); font-style: italic; }
 /*
  * Always-on indicator wedged between the menu and the signed-in chip.
  * Green when the client/daemon pair agree (positive "binaries match"
- * signal), red on mismatch, yellow on unreachable. Compact so it
+ * signal) or red on mismatch. Compact so it
  * doesn't overpower the navigation.
  */
 nav .version-badge { padding: 0 0.4rem; }
@@ -500,12 +500,6 @@ nav .version-badge { padding: 0 0.4rem; }
   background: #ecf6ed;
   color: #1f5a2c;
 }
-.version-warning.unreachable {
-  border-color: #d6c79a;
-  background: #fbf3d8;
-  color: #6e5b1e;
-}
-
 /* htmx: fade the row while an action runs. */
 .htmx-request { opacity: 0.55; transition: opacity 0.12s ease; }
 

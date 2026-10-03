@@ -50,6 +50,9 @@ and the management API are the same surface.
 Both clients check the daemon's `/version` at startup. A product-version
 difference produces a warning, while an incompatible management API version
 stops the client before it issues management operations.
+If `/version` is unreachable or malformed, the client exits rather than
+operating without a compatibility verdict. The Web UI systemd unit retries
+startup under its existing `Restart=on-failure` policy.
 
 Upgrade the three together. See
 [Architecture](../design/architecture.md) § API-version-gated clients.

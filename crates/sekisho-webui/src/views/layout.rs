@@ -167,8 +167,6 @@ fn nav(user: Option<&AuthenticatedUser>, version: Option<&ServerVersion>) -> Mar
 /// * `Match` — compact green `v<VER>`, tooltip carries the full pair.
 /// * `Mismatch` — red `⚠ vCLI↔SERVER` for compatible product-version skew,
 ///   with the full sentence in the `title` attribute.
-/// * `Unreachable` — yellow `⚠ vCLI↔?`. Distinct from Mismatch so the
-///   operator knows it's a connectivity issue, not a drift.
 pub fn version_badge(state: &ServerVersion) -> Markup {
     match state {
         ServerVersion::Match => {
@@ -186,16 +184,6 @@ pub fn version_badge(state: &ServerVersion) -> Markup {
             );
             html! {
                 small class="version-warning mismatch" title=(tip) { (label) }
-            }
-        }
-        ServerVersion::Unreachable => {
-            let label = format!("⚠ v{CLIENT_VERSION}↔?");
-            let tip = format!(
-                "Could not reach the sekisho daemon's /version endpoint at startup. \
-                 sekisho-webui is {CLIENT_VERSION}; the daemon's version is unknown."
-            );
-            html! {
-                small class="version-warning unreachable" title=(tip) { (label) }
             }
         }
     }
@@ -227,18 +215,6 @@ mod tests {
         assert!(
             m.contains("class=\"version-warning mismatch\""),
             "expected mismatch class: {m}"
-        );
-    }
-
-    #[test]
-    fn unreachable_renders_compact_with_question_mark() {
-        let m = version_badge(&ServerVersion::Unreachable).into_string();
-        assert!(m.contains("⚠"), "expected warning sigil");
-        assert!(m.contains("↔?"), "expected unknown-server marker");
-        assert!(m.contains(CLIENT_VERSION));
-        assert!(
-            m.contains("class=\"version-warning unreachable\""),
-            "expected unreachable class: {m}"
         );
     }
 

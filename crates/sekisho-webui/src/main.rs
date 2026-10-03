@@ -18,6 +18,8 @@
 //! A product-version mismatch is recorded in [`ServerVersion`] and rendered as
 //! a badge. An API-version mismatch refuses startup because the UI's compiled
 //! resource knowledge is unsafe against an incompatible management contract.
+//! Failure to obtain or classify `/version` also refuses startup: the UI must
+//! establish compatibility before it can issue management operations.
 //!
 //! ## Binds loopback, and does not share the daemon's database
 //!
@@ -52,20 +54,15 @@ use crate::yaml_config::WebuiConfig;
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Version-handshake outcome captured at startup. Held in `AppState`
-/// so the layout can render a compact mismatch / unreachable badge in
-/// the nav without re-fetching `/version` per page render. A matching
-/// pair renders no badge at all — silent is the right posture when
-/// nothing is wrong.
+/// so the layout can render a compact product-mismatch badge in the nav
+/// without re-fetching `/version` per page render. A matching pair renders the
+/// normal compact green version badge.
 #[derive(Debug, Clone)]
 pub enum ServerVersion {
     /// Server reported a version that matches `CLIENT_VERSION` exactly.
     Match,
     /// Server reported a different product version but a compatible API.
     Mismatch(String),
-    /// `/version` was unreachable at startup (server still booting,
-    /// network blip). Sekisho refuses to hard-fail on this so the UI
-    /// still renders — the badge surfaces the uncertainty.
-    Unreachable,
 }
 
 /// Shared per-request state. Cloned into every handler, so each field is
@@ -82,12 +79,14 @@ pub struct AppState {
     /// Outcome of the startup `/version` handshake. A `std::sync`
     /// `RwLock` (rather than `tokio::sync`) lets the synchronous
     /// `render_page` helper read it without an async context — the
-    /// critical section is a clone of a tiny enum, so contention with
-    /// any future reconcile-tick writer is negligible.
+    /// critical section is a clone of a tiny enum.
     pub server_version: Arc<RwLock<ServerVersion>>,
     pub management_rpk_pin: Arc<sekisho_api_protocol::management_rpk::ManagementRpkPin>,
 }
 
+/// Turn a compatibility verdict into the startup decision.
+///
+/// `Ok` carries the badge state for a usable daemon; `Err` refuses startup.
 fn server_version_state(
     compatibility: sekisho_api_protocol::version::VersionCompatibility,
 ) -> Result<ServerVersion> {
@@ -108,6 +107,19 @@ fn server_version_state(
             Err(anyhow!("invalid /version response: {reason}"))
         }
     }
+}
+
+/// Require the startup probe to establish a compatibility verdict while
+/// retaining its transport/response context in the returned error.
+fn startup_server_version(
+    probe: std::result::Result<
+        sekisho_api_protocol::version::VersionCompatibility,
+        client::VersionProbeError,
+    >,
+) -> Result<ServerVersion> {
+    probe
+        .map_err(anyhow::Error::new)
+        .and_then(server_version_state)
 }
 
 #[tokio::main]
@@ -134,6 +146,37 @@ async fn main() -> Result<()> {
     // a pre-seeded api_key from YAML, or admin-entered API key (setup flow
     // populates this lazily).
     let cred = auth::new_shared(Credential::None);
+
+    let client = SekishoClient::new(
+        cfg.sekisho_api_url.clone(),
+        cred.clone(),
+        &management_rpk_pin,
+    )?;
+
+    // Product-version skew remains visible during rolling upgrades. Establish
+    // API compatibility before installing the configured credential or
+    // starting local auth, before the listener is bound, and before any
+    // management operation is issued.
+    let server_version =
+        startup_server_version(client.get_unauthenticated_version(CLIENT_VERSION).await)?;
+    match &server_version {
+        ServerVersion::Match => {
+            tracing::info!(
+                product_version = CLIENT_VERSION,
+                api_version = sekisho_api_protocol::version::API_VERSION,
+                "sekisho server API is compatible"
+            );
+        }
+        ServerVersion::Mismatch(server_version) => {
+            tracing::warn!(
+                client_version = CLIENT_VERSION,
+                server_version = %server_version,
+                api_version = sekisho_api_protocol::version::API_VERSION,
+                "product version differs; management API is compatible, continuing"
+            );
+        }
+    }
+
     if let Some(local) = &cfg.auth.local_auth {
         let (token, expires_at) =
             auth::local::authenticate(&cfg.sekisho_api_url, &local.socket, &management_rpk_pin)
@@ -151,46 +194,6 @@ async fn main() -> Result<()> {
         tracing::info!("using api_key credential from webui.yaml");
         *cred.write().await = Credential::ApiKey(api_key.clone());
     }
-
-    let client = SekishoClient::new(
-        cfg.sekisho_api_url.clone(),
-        cred.clone(),
-        &management_rpk_pin,
-    )?;
-
-    // Product-version skew remains visible during rolling upgrades, while an
-    // incompatible API fails before the UI can issue management operations.
-    let server_version = match client.get_unauthenticated_version(CLIENT_VERSION).await {
-        Ok(compatibility) => {
-            let state = server_version_state(compatibility)?;
-            match &state {
-                ServerVersion::Match => {
-                    tracing::info!(
-                        product_version = CLIENT_VERSION,
-                        api_version = sekisho_api_protocol::version::API_VERSION,
-                        "sekisho server API is compatible"
-                    );
-                }
-                ServerVersion::Mismatch(server_version) => {
-                    tracing::warn!(
-                        client_version = CLIENT_VERSION,
-                        server_version = %server_version,
-                        api_version = sekisho_api_protocol::version::API_VERSION,
-                        "product version differs; management API is compatible, continuing"
-                    );
-                }
-                ServerVersion::Unreachable => {}
-            }
-            state
-        }
-        Err(client::VersionProbeError::Unreachable(reason)) => {
-            tracing::warn!(error = %reason, "could not reach /version at startup — proceeding");
-            ServerVersion::Unreachable
-        }
-        Err(client::VersionProbeError::InvalidResponse(reason)) => {
-            return Err(anyhow!(reason));
-        }
-    };
 
     // Guard selection. JWT mode requires a complete public JWKS before the
     // listener is bound; refreshes retain the last verified set on failure.
@@ -315,5 +318,43 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("invalid /version response"));
+    }
+
+    #[test]
+    fn unreachable_version_endpoint_refuses_startup_with_context() {
+        let error = startup_server_version(Err(client::VersionProbeError::Unreachable(
+            "connection refused".to_string(),
+        )))
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("GET /version failed"), "{message}");
+        assert!(message.contains("connection refused"), "{message}");
+    }
+
+    #[test]
+    fn invalid_version_response_refuses_startup_with_context() {
+        let error = startup_server_version(Err(client::VersionProbeError::InvalidResponse(
+            "decode JSON: expected value".to_string(),
+        )))
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("invalid /version response"), "{message}");
+        assert!(message.contains("decode JSON"), "{message}");
+    }
+
+    #[test]
+    fn compatibility_probe_precedes_local_auth_and_listener_bind() {
+        let source = include_str!("main.rs");
+        let probe = source
+            .find("startup_server_version(client.get_unauthenticated_version")
+            .expect("startup compatibility probe");
+        let local_auth = source
+            .find("auth::local::authenticate")
+            .expect("local-auth exchange");
+        let listener = source.find("TcpListener::bind").expect("listener bind");
+        assert!(
+            probe < local_auth && probe < listener,
+            "compatibility must be established before auth exchange and listener bind"
+        );
     }
 }

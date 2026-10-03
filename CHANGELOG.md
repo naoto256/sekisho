@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Negotiate an explicit management API version so product-version skew only
   warns while incompatible API versions are rejected by the CLI and Web UI.
+  Both clients also refuse startup when `/version` cannot establish
+  compatibility.
 
 ### Fixed
 

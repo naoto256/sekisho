@@ -100,6 +100,32 @@ async fn main() {
         std::process::exit(run_healthz(&cli.url, &management_rpk_pin).await);
     }
 
+    /// `Ok(Some(_))` is a product-skew warning for the caller to print; `Err`
+    /// is fatal.
+    async fn verify_server_version(client: &api::ApiClient) -> Result<Option<String>, String> {
+        // `/version` is deliberately unauthenticated so this check runs before
+        // any credential prompt or local-auth exchange.
+        let verdict = version::probe(client).await;
+        version::startup_check(&verdict)
+    }
+
+    // Establish API compatibility before prompting for or exchanging
+    // credentials.
+    let version_client = match api::ApiClient::new(&cli.url, "", &management_rpk_pin) {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(2);
+        }
+    };
+    let version_warning = match verify_server_version(&version_client).await {
+        Ok(warning) => warning,
+        Err(msg) => {
+            eprintln!("compatibility check failed: {msg}");
+            std::process::exit(1);
+        }
+    };
+
     let api_key = if cli.local_auth {
         // Challenge-response via Unix socket
         eprint!("Authenticating via local socket {} ... ", cli.socket);
@@ -135,16 +161,8 @@ async fn main() {
         }
     };
 
-    async fn verify_server_version(client: &api::ApiClient) -> Result<Option<String>, String> {
-        // `/version` is deliberately unauthenticated so this check
-        // survives auth errors — we want a clear API-version mismatch
-        // message, not a confusing 401.
-        let verdict = version::probe(client).await;
-        version::startup_check(&verdict)
-    }
-
     if !cli.local_auth {
-        // Verify connection, version match, and auth.
+        // Verify connection and the supplied credential.
         eprint!("Connecting to {} ... ", cli.url);
         match client.get("/health").await {
             Ok(_) => {}
@@ -153,13 +171,6 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        let version_warning = match verify_server_version(&client).await {
-            Ok(warning) => warning,
-            Err(msg) => {
-                eprintln!("compatibility check failed: {msg}");
-                std::process::exit(1);
-            }
-        };
         match client.get("/_internal/host").await {
             Ok(_) => eprintln!("ok"),
             Err(e) => {
@@ -167,20 +178,11 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        if let Some(warning) = version_warning {
-            eprintln!("warning: {warning}");
-        }
-    } else {
-        // Local auth still needs the API compatibility check before the shell
-        // can issue management operations.
-        match verify_server_version(&client).await {
-            Ok(Some(warning)) => eprintln!("warning: {warning}"),
-            Ok(None) => {}
-            Err(msg) => {
-                eprintln!("compatibility check failed: {msg}");
-                std::process::exit(1);
-            }
-        }
+    }
+    // Held until any connection/authentication status line is complete so the
+    // warning does not land in the middle of it.
+    if let Some(warning) = version_warning {
+        eprintln!("warning: {warning}");
     }
 
     eprintln!();

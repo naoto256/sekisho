@@ -8,14 +8,26 @@ use serde_json::Value;
 
 use crate::auth::SharedCredential;
 
+/// Why the startup `/version` probe produced no compatibility verdict.
+///
+/// Both cases refuse startup. They remain distinct so the operator can tell
+/// whether no response arrived or a response arrived but was unusable.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum VersionProbeError {
+    /// The request itself failed, so no response was received.
     #[error("GET /version failed: {0}")]
     Unreachable(String),
+    /// A response arrived but is not a usable `/version` document: a non-2xx
+    /// status, a body that could not be read as bounded UTF-8 text, or
+    /// invalid JSON.
     #[error("invalid /version response: {0}")]
     InvalidResponse(String),
 }
 
+/// Classify an already-read `/version` response.
+///
+/// Split from the request so the status and decode handling can be tested
+/// without a server.
 fn classify_version_http_response(
     status: reqwest::StatusCode,
     text: &str,
