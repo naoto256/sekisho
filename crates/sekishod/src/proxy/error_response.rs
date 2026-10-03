@@ -44,6 +44,11 @@ impl ProxyErrorKind {
 
     /// The exact body and content type this rejection had before negotiation
     /// existed, returned so the JSON branch can reproduce it byte for byte.
+    ///
+    /// The content type is optional because not every variant had one: the
+    /// concurrency rejection was an empty body with no type at all, and the
+    /// body limit was plain text. Preserving those exactly is what lets HTML
+    /// be added without any existing client seeing a changed response.
     fn legacy_representation(self) -> (&'static str, Option<&'static str>) {
         match self {
             Self::Handler(status) => {
@@ -73,12 +78,23 @@ impl ProxyErrorKind {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// How strongly a request asked for one media type.
+///
+/// Field order is the comparison order — `derive(Ord)` compares `quality`
+/// first and only falls through to `specificity` on a tie, which is the
+/// precedence RFC 7231 describes: a higher q wins outright, and among equal q
+/// the more specific range wins.
 struct MediaPreference {
     quality: u16,
     specificity: u8,
 }
 
 /// Fold one `Accept` member into the best preference seen so far for a type.
+///
+/// A more specific range replaces a less specific one outright rather than
+/// competing on quality, because RFC 7231 says the most specific match
+/// determines the value: `text/html;q=0.1` alongside `text/*;q=0.9` means the
+/// client wants HTML at 0.1, not 0.9. Among equally specific ranges the
+/// highest quality wins.
 fn update_preference(current: &mut Option<MediaPreference>, quality: u16, specificity: u8) {
     let candidate = MediaPreference {
         quality,
@@ -94,6 +110,12 @@ fn update_preference(current: &mut Option<MediaPreference>, quality: u16, specif
 }
 
 /// Parse a `q=` value into thousandths, or `None` if it is not well formed.
+///
+/// Integer thousandths rather than a float: quality values compare for
+/// ordering and equality, and exact integer comparison avoids a tie being
+/// decided by representation error. `None` is a real answer here — the caller
+/// discards the whole member rather than guessing a default, so a malformed
+/// parameter cannot silently become `q=1`.
 fn parse_quality(value: &str) -> Option<u16> {
     let value = value.trim();
     let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
@@ -113,8 +135,10 @@ fn parse_quality(value: &str) -> Option<u16> {
     }
 }
 
-/// Select HTML only when its preference strictly outranks JSON's; ties stay
-/// on the legacy JSON representation.
+/// Select HTML only when its (quality, specificity) pair strictly outranks
+/// JSON's; ties stay on the legacy JSON representation. A malformed media
+/// range or parameter discards that member alone, so the remaining well-formed
+/// members still decide the outcome.
 pub(crate) fn proxy_error_representation(headers: &HeaderMap) -> ProxyErrorRepresentation {
     let mut html = None;
     let mut json = None;
@@ -181,8 +205,15 @@ pub(crate) fn proxy_error_representation(headers: &HeaderMap) -> ProxyErrorRepre
     }
 }
 
-/// The HTML page for an owned rejection. Every interpolated value is selected
-/// from a fixed status code; request data never enters the document.
+/// The HTML page for an owned rejection.
+///
+/// Every value interpolated here is a literal chosen by status code. No
+/// request-derived value is reflected into the document — not the path, the
+/// host, the user, the upstream, nor an internal error string — so a page that
+/// lands in the wrong browser, a shared screen or a bug report carries none of
+/// them. The status itself, and the fact that Sekisho refused, remain visible.
+/// It also references no external asset, which keeps a refusal from turning
+/// into a request to a third party.
 fn html_error_body(status: StatusCode) -> String {
     let (title, message) = match status {
         StatusCode::BAD_REQUEST => ("Bad request", "The request could not be understood."),
@@ -214,7 +245,9 @@ fn html_error_body(status: StatusCode) -> String {
     )
 }
 
-/// Reproduce an owned source's pre-negotiation response exactly.
+/// Reproduce an owned source's pre-negotiation response exactly. Internal
+/// routes use this when they share a transport limit with the public proxy but
+/// remain outside the public representation contract.
 pub(crate) fn legacy_proxy_error_response(kind: ProxyErrorKind) -> Response<Body> {
     let (body, content_type) = kind.legacy_representation();
     let mut response = Response::new(Body::from(body));
@@ -227,7 +260,8 @@ pub(crate) fn legacy_proxy_error_response(kind: ProxyErrorKind) -> Response<Body
     response
 }
 
-/// Build a negotiated fixed error response for an owned proxy rejection.
+/// Build a negotiated fixed error response for an owned proxy rejection. No
+/// request-derived value is included in either representation.
 pub(crate) fn proxy_error_response(
     kind: ProxyErrorKind,
     representation: ProxyErrorRepresentation,
@@ -293,6 +327,9 @@ mod tests {
         proxy_error_representation(&headers)
     }
 
+    /// The default-to-JSON contract, case by case: absent, empty, wildcard-only,
+    /// tie, and `q=0` all stay on the legacy wire. Only an explicit preference
+    /// that outranks JSON switches.
     #[test]
     fn proxy_error_accept_contract_is_json_safe_by_default() {
         for (values, expected) in [
@@ -346,6 +383,9 @@ mod tests {
         }
     }
 
+    /// Existing clients see byte-identical bodies and content types. The only
+    /// additions are `Vary` and `Cache-Control`, which a JSON client ignores but
+    /// a cache needs.
     #[tokio::test]
     async fn proxy_json_wire_is_exact_except_for_negotiation_headers() {
         for (status, expected) in [
@@ -385,6 +425,9 @@ mod tests {
         }
     }
 
+    /// For each owned status listed here, the page is well-formed, carries the
+    /// security headers, and reflects no request-derived value. The list is
+    /// written out rather than derived, so it covers exactly these statuses.
     #[tokio::test]
     async fn proxy_html_is_fixed_accessible_and_hardened_for_every_owned_status() {
         for status in [
