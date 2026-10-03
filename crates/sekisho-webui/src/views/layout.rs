@@ -115,7 +115,7 @@ fn nav(user: Option<&AuthenticatedUser>, version: Option<&ServerVersion>) -> Mar
     use crate::registry::RESOURCES;
 
     // Every nav entry is a compile-time constant now — the registry
-    // is version-locked, so nav is too.
+    // is API-version-gated, so nav is too.
     let mut entries: Vec<(u8, &'static str, &'static str)> = Vec::new();
     for r in RESOURCES {
         entries.push((r.nav_order, r.mount, r.title));
@@ -165,8 +165,8 @@ fn nav(user: Option<&AuthenticatedUser>, version: Option<&ServerVersion>) -> Mar
 /// agree" signal alongside the warning states.
 ///
 /// * `Match` — compact green `v<VER>`, tooltip carries the full pair.
-/// * `Mismatch` — red `⚠ vCLI↔SERVER`, full sentence in the `title`
-///   attribute. Loud enough to notice on every page.
+/// * `Mismatch` — red `⚠ vCLI↔SERVER` for compatible product-version skew,
+///   with the full sentence in the `title` attribute.
 /// * `Unreachable` — yellow `⚠ vCLI↔?`. Distinct from Mismatch so the
 ///   operator knows it's a connectivity issue, not a drift.
 pub fn version_badge(state: &ServerVersion) -> Markup {
@@ -181,8 +181,8 @@ pub fn version_badge(state: &ServerVersion) -> Markup {
         ServerVersion::Mismatch(server) => {
             let label = format!("⚠ v{CLIENT_VERSION}↔{server}");
             let tip = format!(
-                "Version mismatch: sekisho-webui is {CLIENT_VERSION}, sekisho daemon is {server}. \
-                 Rebuild or reinstall the matching sekisho-webui."
+                "Product version differs: sekisho-webui is {CLIENT_VERSION}, sekisho daemon is \
+                 {server}. Their management API version is compatible."
             );
             html! {
                 small class="version-warning mismatch" title=(tip) { (label) }

@@ -1,6 +1,6 @@
 //! The compile-time resource and field tree the shell renders from.
 //!
-//! This is the client half of the version-locked split: the daemon serves data
+//! This is the client half of the API-version-gated split: the daemon serves data
 //! and knows nothing about presentation, and everything about *how* a resource
 //! looks — which fields exist, their types, their order, what completes — lives
 //! here. The tradeoff is explicit. A UI-visible field change touches this file
@@ -12,7 +12,7 @@
 //! JSON names on the way out, so the command language reads like a CLI rather
 //! than like the wire format.
 
-//! Resource registry — the shell's version-locked knowledge of what
+//! Resource registry — the shell's API-version-gated knowledge of what
 //! lives on the server.
 //!
 //! Previously this was fetched at startup from `GET /_internal/resources`

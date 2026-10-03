@@ -47,7 +47,7 @@ Two consequences worth knowing when editing `lib/content.js`:
 - Heading ids follow **mdBook's** rule, not markdown-it's default. The
   book's cross-references are hand-written against the ids mdBook
   produces, and mdBook drops punctuation rather than encoding it
-  (`### 3. Version-locked clients` → `3-version-locked-clients`).
+  (`### 3. API-version-gated clients` → `3-api-version-gated-clients`).
 - Links in the source are relative to the file they appear in and point
   at `.md`. Both are resolved and rewritten at render time.
 
