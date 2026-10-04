@@ -67,9 +67,15 @@ api/                 Management REST API (axum).
 
 proxy/               Reverse proxy engine.
   mod.rs             ProxyState, Router, ACME challenge dispatch.
-  handler.rs         Request handler (route match -> auth -> forward).
+  handler.rs         Route match, authentication, policy, redirects.
+  forward.rs         Identity, upstream selection, HTTP/WS forwarding.
+  error_response.rs  JSON/HTML proxy error negotiation and rendering.
+  response_lease.rs  Response permit lifetime and body idle timeout.
+  header_boundary.rs Hop-by-hop and proxy-owned header isolation.
+  route_client.rs    Per-route TLS client and authority rewriting.
   transform.rs       RequestTransform pipeline (registry pattern).
   upstream.rs        Upstream selection: round-robin cursor or uniform random.
+  websocket.rs       WebSocket upgrade and tunnel forwarding.
 
 auth/                Authentication.
   oidc/              OIDC client (JWKS, JWT verification, PKCE).

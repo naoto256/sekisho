@@ -17,9 +17,8 @@ case "$1" in
         # Ensure state directory exists with correct ownership
         install -d -o sekisho -g sekisho -m 0750 /var/lib/sekisho
 
-        # Enable and start the daemon. The sekisho-webui unit, if installed,
-        # is started by its own package's postinst (it's PartOf this unit so
-        # it follows the daemon's lifecycle once both are running).
+        # Enable and start the daemon. The independently installable Web UI
+        # remains disabled until an operator enables its own unit.
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload
             systemctl enable sekishod.service

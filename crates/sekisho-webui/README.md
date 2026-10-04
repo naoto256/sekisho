@@ -5,8 +5,9 @@ It is a server-rendered BFF built with axum, Maud, and HTMX: the browser talks
 to the Web UI, and the Web UI talks to the `sekishod` management API. The
 management credential is never sent to the browser.
 
-The executable is separate from the `sekishod` IAP process. Operators who do
-not want a browser UI can manage the same API with `sekisho-cli` instead.
+The executable is separate from the `sekishod` IAP process and may connect to
+a daemon on another host. Operators who do not want a browser UI can manage
+the same API with `sekisho-cli` instead.
 
 ## Configuration
 
@@ -21,7 +22,7 @@ The configuration covers:
 
 The Debian package installs an example configuration and leaves
 `sekisho-webui.service` disabled. Enable it explicitly on hosts that should run
-the UI:
+the UI after setting its daemon URL, RPK pin, and authentication mode:
 
 ```sh
 sudo systemctl enable --now sekisho-webui

@@ -34,8 +34,10 @@ to the cluster database. See
 > **Note on `default_idp_id`.** The database column is a `uuid`, and
 > the HTTP API accepts / emits only UUIDs. `sekisho-cli` and `sekisho-webui`
 > additionally let operators specify the IdP by **name**: `sekisho-webui`
-> renders the field as a dropdown labelled with each IdP's name, and
-> `sekisho-cli` resolves `set default_idp_id <name>` to the matching
+> renders the field under **General → Sessions** as a dropdown labelled with
+> each IdP's name, and marks the chosen IdP with a **Default** badge on the
+> Identity Providers page. `sekisho-cli` resolves
+> `set default-idp-id <name>` to the matching
 > UUID before sending the PATCH. A pasted UUID still works in both
 > UIs. IdP names are unique server-side so the lookup is unambiguous.
 
