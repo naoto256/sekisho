@@ -61,11 +61,14 @@ Nothing else has to change for the daemon to work without it — the shell
 and the management API are the same surface.
 
 On first install, the package creates `/etc/sekisho-webui/webui.yaml` as
-`root:sekisho` with mode `0640`, because the YAML can contain an API key.
-Upgrades do not change an existing file's owner or mode: once created, it is
-operator-managed and may contain a deliberately different access policy. An
-API key entered through the setup form stays in process memory instead of
-being written to this file.
+`root:sekisho` with mode `0640`, because the YAML can contain an API key. The
+service runs as `sekisho` and reads the file through its `sekisho` group
+membership. On each configure, an existing non-symlink regular file whose
+numeric owner, group, and mode are exactly `0:0:644` is treated as the legacy
+default and changed to `root:sekisho` mode `0640`; its contents are not
+rewritten. Other existing owner, group, and mode combinations remain
+operator-managed and unchanged. An API key entered through the setup form
+stays in process memory instead of being written to this file.
 
 The Web UI can instead manage a remote daemon. Before enabling its service,
 set `sekisho_api_url` and `management_rpk_pin`, remove the `local_auth` block,

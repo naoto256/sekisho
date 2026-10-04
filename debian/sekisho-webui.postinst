@@ -11,14 +11,28 @@ case "$1" in
         fi
 
         # On first install, seed /etc/sekisho-webui/webui.yaml from the
-        # shipped example so the service has *something* to load.
-        # We never overwrite an existing file — operators edit it in
-        # place.
-        if [ ! -f /etc/sekisho-webui/webui.yaml ]; then
+        # shipped example so the service has *something* to load. Never
+        # follow or replace an existing path: operators manage its contents
+        # and may deliberately choose different metadata.
+        config_path=/etc/sekisho-webui/webui.yaml
+        if [ ! -e "$config_path" ] && [ ! -L "$config_path" ]; then
             install -d -m 0755 /etc/sekisho-webui
             install -m 0640 -o root -g sekisho \
                 /etc/sekisho-webui/webui.yaml.example \
-                /etc/sekisho-webui/webui.yaml
+                "$config_path"
+        elif [ -f "$config_path" ] && [ ! -L "$config_path" ] && \
+             [ "$(stat -c '%u:%g:%a' -- "$config_path")" = "0:0:644" ]; then
+            # 0.1.0 generated this exact metadata. Tighten the mode first to
+            # reduce exposure before changing ownership, without rewriting
+            # the configuration. If chown fails, restore 0644: root:root 0640
+            # would be unreadable by the packaged User=sekisho. Fail configure
+            # rather than silently treating an incomplete tightening as a
+            # success. All other existing metadata remains operator-owned.
+            chmod 0640 -- "$config_path"
+            if ! chown root:sekisho -- "$config_path"; then
+                chmod 0644 -- "$config_path" || true
+                exit 1
+            fi
         fi
 
         # The Web UI is optional. debian/rules installs its unit with
