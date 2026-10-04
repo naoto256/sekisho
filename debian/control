@@ -15,23 +15,24 @@ Description: Identity-Aware Proxy daemon (sekishod)
  .
  This package contains the proxy daemon (sekishod), its systemd unit,
  the /etc/default/sekishod environment file, and the system user the
- service runs as. Operators install sekisho-cli alongside this package
- to manage the daemon, and sekisho-webui for a browser-based admin UI.
+ service runs as. Operators can manage it locally or remotely with the
+ separately installable sekisho-cli and sekisho-webui packages.
 
 Package: sekisho-cli
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, sekishod (= ${binary:Version})
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Sekisho management CLI (sekisho-cli)
- JunOS-style interactive shell for managing a sekishod daemon over its
- local control socket. Version-locked to sekishod: a sekisho-cli binary
- only talks to a daemon of the exact same version, so this package
- strictly depends on the matching sekishod package.
+ JunOS-style interactive shell for managing a local or remote sekishod
+ daemon through its HTTPS management API. It can authenticate with an API
+ key, or through the local control socket when installed beside the daemon.
+ Product-version differences warn; incompatible management API versions
+ are rejected at startup.
 
 Package: sekisho-webui
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, sekishod (= ${binary:Version})
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
 Description: Sekisho web admin UI (sekisho-webui)
- Read/write web admin UI (axum + Maud + HTMX) for the sekishod
- management API. Ships its own systemd unit, disabled by default —
- operators opt in per host. Version-locked to sekishod, so this
- package strictly depends on the matching sekishod package.
+ Read/write web admin UI (axum + Maud + HTMX) for a local or remote
+ sekishod management API. Ships its own systemd unit, disabled by default,
+ so operators opt in per host. Product-version differences warn;
+ incompatible management API versions are rejected at startup.

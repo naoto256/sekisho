@@ -1,3 +1,12 @@
+sekisho (0.1.1-1) unstable; urgency=medium
+
+  * Negotiate management API compatibility before client startup.
+  * Allow management clients to be installed independently of the daemon.
+  * Expose the configured default identity provider in the Web UI.
+  * Fix duplicate systemd unit paths on merged-/usr systems.
+
+ -- Naoto Morishima <naoto256@users.noreply.github.com>  Sun, 04 Oct 2026 14:40:38 +0900
+
 sekisho (0.1.0-1) unstable; urgency=medium
 
   * Initial release.

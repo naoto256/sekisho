@@ -9,8 +9,7 @@
 listen: 127.0.0.1:9444
 
 # Base URL of the upstream Sekisho management API (sekishod).
-# sekisho-webui has no multi-URL failover (kaido-only feature) —
-# this is a single scalar.
+# sekisho-webui has no multi-URL failover; this is a single scalar.
 sekisho_api_url: https://127.0.0.1:9443
 
 # Required out-of-band Ed25519 raw-public-key pin. Obtain it on the daemon
@@ -23,8 +22,11 @@ management_rpk_pin: "replace-with-sekisho-rpk-v1-pin"
 # startup, prompt the operator via the /setup form" (the key then
 # lives in process memory only).
 auth:
-  # Authenticate via the local Unix challenge socket. The sekisho
-  # group must own the socket and sekisho-webui must run as a member.
+  # Authenticate via the local Unix challenge socket. The Web UI must run as
+  # the same `sekisho` service user as the daemon; group membership alone is
+  # not sufficient because the daemon verifies the peer UID. See the Debian
+  # installation guide for the optional systemd drop-in that couples their
+  # lifecycle on a co-located host.
   local_auth:
     socket: /run/sekisho/control.sock
   # Or pre-seed an API key (rarely used outside scripted bootstraps;
@@ -37,9 +39,8 @@ auth:
 # logged in that case.
 guard:
   # Verify X-Sekisho-Jwt headers injected by an upstream Sekisho
-  # IAP. sekisho-webui's guard takes a single URL today — the
-  # YAML key is a list for cross-system shape consistency with
-  # kaido-webui, but only the first entry is honoured here.
+  # IAP. The guard uses the first URL in this list and logs a
+  # warning when additional entries are present.
   # trust_sekisho_jwt:
   #   sekisho_api_urls:
   #     - https://127.0.0.1:9443
@@ -54,7 +55,7 @@ guard:
 # When omitted, sekisho-webui serves plain HTTP and assumes an
 # upstream proxy terminates TLS (the historical posture). When
 # set, both `cert` and `key` must point at PEM files readable by
-# the sekisho-webui user.
+# the `sekisho` service user.
 # tls:
 #   cert: /etc/sekisho-webui/cert.pem
 #   key:  /etc/sekisho-webui/key.pem

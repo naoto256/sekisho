@@ -4,9 +4,6 @@ set -e
 case "$1" in
     remove|upgrade)
         if [ -d /run/systemd/system ]; then
-            # Stop the webui first if it's running — it's PartOf sekishod, but
-            # explicit ordering avoids systemd surprises during package removal.
-            systemctl stop sekisho-webui.service 2>/dev/null || true
             systemctl stop sekishod.service || true
             systemctl disable sekishod.service || true
         fi

@@ -176,10 +176,13 @@ control plane is required.
 ## What's inside
 
 - `sekishod` — proxy daemon (TLS terminator, policy enforcer, ACME client)
-- `sekisho-cli` — interactive management shell over the local UNIX socket
-- `sekisho-webui` — read/write web admin UI for the management API
+- `sekisho-cli` — interactive client for a local or remote management API
+- `sekisho-webui` — read/write browser client for a local or remote management
+  API
 - `sekisho-api-protocol` — server/CLI/Web UI path contracts and URL
-  normalization, plus CLI/Web UI certificate-enable orchestration
+  normalization, API-version negotiation, and certificate-enable orchestration
+- `sekisho-management-rpk-tls` — canonical Ed25519 raw-public-key validation
+  shared by the management server and clients, plus pinned client TLS setup
 
 ## Documentation
 

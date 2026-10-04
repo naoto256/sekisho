@@ -90,7 +90,9 @@ while an API-version difference stops both clients before they issue
 management operations.
 You can still drive Sekisho directly from `curl`, a config-management
 tool, or Terraform — the management API is a stable, documented HTTP
-contract — but the shipped clients expect to travel with the daemon.
+contract. The shipped clients can be installed independently and connect
+to a remote daemon; their startup version check enforces the management API
+compatibility boundary.
 
 ## How to read this book
 

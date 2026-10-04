@@ -6,7 +6,7 @@ something is actually broken, see [Troubleshooting](./troubleshooting.md).
 
 ## systemd
 
-The `.deb` package ships `/lib/systemd/system/sekishod.service`:
+The `.deb` package ships `/usr/lib/systemd/system/sekishod.service`:
 
 ```ini
 [Unit]
@@ -80,6 +80,25 @@ sudo journalctl -u sekishod -f           # follow logs
 sudo journalctl -u sekishod --since today
 sudo journalctl -u sekishod -p warning   # warnings and above
 ```
+
+The packaged `sekisho-webui.service` is independent of the daemon because the
+Web UI can manage a remote Sekisho host. If this host instead uses Web UI
+`local_auth`, add the following with
+`sudo systemctl edit sekisho-webui.service`:
+
+```ini
+[Unit]
+Requires=sekishod.service
+After=sekishod.service
+PartOf=sekishod.service
+```
+
+After `sudo systemctl daemon-reload`, restart the Web UI. The drop-in makes a
+daemon restart restart an active Web UI as well, renewing its in-memory
+local-auth credential. Without it, restart the Web UI manually after the
+daemon. A separate daemon stop followed by a later start leaves the Web UI
+stopped even with the drop-in; systemd does not infer a reverse start
+dependency.
 
 ## Environment file
 
@@ -188,7 +207,7 @@ configuration.
 | `sekisho_proxy_requests_total`               | counter   | route, status           | RPS, error rate per route. Unmatched traffic is bucketed under `route="_unrouted"`. |
 | `sekisho_proxy_response_headers_duration_seconds` | histogram | route, status           | Request start through response headers, including upstream selection and response-header latency. |
 | `sekisho_proxy_response_body_duration_seconds` | histogram | route, status, outcome  | Response headers through EOF, body error, or downstream drop. `outcome` is exactly one of `eof`, `error`, or `dropped`. |
-| `sekisho_proxy_upstream_errors_total`        | counter   | route, kind             | `kind` ∈ {`timeout`, `route_client_build`, `request_body`, `upstream_send`, `response_body`}. |
+| `sekisho_proxy_upstream_errors_total`        | counter   | route, kind             | `kind` ∈ {`timeout`, `route_client_build`, `upstream_send`}. |
 | `sekisho_proxy_policy_denied_total`          | counter   | route, reason           | Policy-deny path; reason currently `policy_deny` (will subdivide as the DSL surfaces structured failure). |
 | `sekisho_auth_login_total`                   | counter   | idp_id, kind, result    | `kind` ∈ {`oidc`, `saml`}; `result` ∈ {`success`, `failure`}. Login attempts that never reach IdP context get `idp_id="unknown"`. |
 | `sekisho_auth_logout_total`                  | counter   | kind                    | `kind` ∈ {`idp_redirect`, `local_only`, `saml_slo`}. |

@@ -64,6 +64,11 @@ IdPs are created, edited and deleted from `sekisho-cli` (`create idp`,
 of the web UI (`sekisho-webui`), which has the same fields in a form. Either is fine;
 they are editing the same object.
 
+Choose the global default from **General → Sessions** in the Web UI, or with
+`set default-idp-id <name>` under `edit sekisho` in the CLI. The Identity
+Providers page marks the selected row with a **Default** badge. Routes with an
+explicit IdP ignore this default.
+
 One behaviour is worth knowing before you use the form: **leaving the
 client-secret box empty keeps the stored secret.** It does not blank
 it. That is the same rule the API follows, described under [Update
