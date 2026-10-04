@@ -26,7 +26,35 @@ pub async fn list(
         Ok(v) => v,
         Err(e) => return err_page(&s, u, "IdP list failed", &e),
     };
-    render_page(&s, u, "Identity Providers", view::list(&items))
+    // The default IdP is daemon-wide enrichment rather than part of each IdP.
+    // If that auxiliary fetch fails, keep the primary list available and omit
+    // only the badge while leaving a diagnostic for operators.
+    let config: anyhow::Result<Value> = s.client.get_json(api_paths::CONFIG).await;
+    render_page(
+        &s,
+        u,
+        "Identity Providers",
+        list_with_config(&items, config),
+    )
+}
+
+/// Render the IdP list from an already-attempted configuration fetch.
+///
+/// Keeping this step separate from [`list`] lets the degraded path be tested
+/// without constructing a management client. The generic `E: Display` also
+/// lets that test supply a small representative error instead of constructing
+/// the client's concrete error type.
+fn list_with_config<E>(items: &[Value], config: Result<Value, E>) -> maud::Markup
+where
+    E: std::fmt::Display,
+{
+    match config {
+        Ok(config) => view::list(items, config.get("default_idp_id").and_then(Value::as_str)),
+        Err(error) => {
+            tracing::warn!(%error, "Config fetch failed; rendering IdP list without default badge");
+            view::list(items, None)
+        }
+    }
 }
 
 pub async fn new_form(
@@ -208,7 +236,32 @@ fn put_str_or_null(map: &mut serde_json::Map<String, Value>, key: &str, v: &str)
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use tracing_subscriber::prelude::*;
+
     use super::*;
+
+    #[derive(Clone)]
+    struct WarningCounter(Arc<AtomicUsize>);
+
+    impl<S> tracing_subscriber::Layer<S> for WarningCounter
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
 
     fn base_form(ty: &str) -> IdpFormBody {
         IdpFormBody {
@@ -251,5 +304,24 @@ mod tests {
         assert_eq!(oidc["scopes"], serde_json::json!(["openid", "email"]));
         assert!(oidc["prompt"].is_null());
         assert!(body["saml_config"].is_null());
+    }
+
+    #[test]
+    fn config_fetch_failure_keeps_idp_list_without_default_badge_and_warns() {
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(WarningCounter(warnings.clone()));
+        let items = vec![serde_json::json!({
+            "id": "idp-1",
+            "name": "Primary",
+            "type": "oidc"
+        })];
+
+        let rendered = tracing::subscriber::with_default(subscriber, || {
+            list_with_config(&items, Err::<Value, _>("config unavailable")).into_string()
+        });
+
+        assert!(rendered.contains(">Primary</a>"));
+        assert!(!rendered.contains("default-idp-badge"));
+        assert_eq!(warnings.load(Ordering::Relaxed), 1);
     }
 }

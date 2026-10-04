@@ -92,7 +92,10 @@ fn general_section(data: &Value, idps: &[Value]) -> Markup {
                 // alongside the service DB URL.
                 label { "Auth domain" input type="text" name="auth_domain" value=(s("auth_domain")) placeholder="auth.example.com"; }
             }
-            fieldset {
+            // `id="sessions"` is a link target: the IdP list points at
+            // `/general#sessions` for changing the default IdP. Renaming it
+            // breaks those links.
+            fieldset id="sessions" {
                 legend { "Sessions" }
                 label { "Cookie name" input type="text" name="cookie_name" value=(s("cookie_name")) placeholder="_sekisho_session"; }
                 label { "Session lifetime (hours)" input type="number" name="session_lifetime_hours" value=(s("session_lifetime_hours")); }
@@ -721,6 +724,12 @@ mod tests {
     fn general_form_posts_to_general_route() {
         let html = render(json!({}), None, false);
         assert!(html.contains("action=\"/general\""));
+    }
+
+    #[test]
+    fn sessions_section_has_a_stable_anchor() {
+        let html = render(json!({}), None, false);
+        assert!(html.contains("<fieldset id=\"sessions\">"));
     }
 
     // ───────── DEK rotation section ─────────
