@@ -2,12 +2,16 @@
 set -e
 
 case "$1" in
-    remove|upgrade)
+    remove)
         if [ -d /run/systemd/system ]; then
             systemctl stop sekisho-webui.service || true
             systemctl disable sekisho-webui.service || true
         fi
         ;;
 esac
+
+# On upgrade, leave a running service in place. The new postinst restarts only
+# an active instance after debhelper has reloaded the unit, without changing
+# whether the operator enabled it.
 
 #DEBHELPER#

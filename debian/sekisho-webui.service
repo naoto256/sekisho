@@ -1,9 +1,8 @@
 [Unit]
 Description=Sekisho Web Admin UI (BFF)
 Documentation=https://github.com/naoto256/sekisho
-After=network-online.target sekishod.service
+After=network-online.target
 Wants=network-online.target
-PartOf=sekishod.service
 
 [Service]
 Type=simple
@@ -29,7 +28,7 @@ LockPersonality=yes
 # when auth.local_auth is configured. The sekishod.service RuntimeDirectory
 # creates /run/sekisho owned by sekisho:sekisho, and we share it.
 # /etc/sekisho-webui is read-only — the optional tls cert/key files live there too.
-ReadOnlyPaths=/run/sekisho /etc/sekisho-webui
+ReadOnlyPaths=-/run/sekisho /etc/sekisho-webui
 
 # Logging
 StandardOutput=journal

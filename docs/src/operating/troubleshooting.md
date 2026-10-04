@@ -120,6 +120,43 @@ sudo -u sekisho sekisho-cli --local-auth
 If the socket itself is missing at `/run/sekisho/control.sock`, the
 daemon is not running.
 
+## The Web UI gets authentication errors after a daemon restart
+
+With `auth.local_auth`, the Web UI keeps a daemon-issued management credential
+in memory. Restarting the daemon invalidates that credential. If the packaged
+units are running independently, Web UI requests can therefore receive `401`
+until the Web UI restarts or its scheduled credential refresh succeeds.
+
+**Fix.** Refresh the credential immediately:
+
+```bash
+sudo systemctl restart sekisho-webui
+```
+
+For a co-located local-auth installation, use the optional systemd drop-in in
+[Debian and Ubuntu](../install/debian.md) to couple the two unit lifecycles.
+The base Web UI unit intentionally remains independent for remote-management
+deployments.
+
+## The CLI or Web UI refuses to start at `/version`
+
+Both management clients establish API compatibility before handling a
+credential. The CLI reports `compatibility check failed`; the Web UI exits
+with `GET /version failed`, `invalid /version response`, or
+`management API version mismatch`. This is fail-closed behavior, not an
+authentication failure.
+
+**Check.** Confirm that `sekisho_api_url` or the CLI URL reaches the intended
+daemon, that the management RPK pin is current, and that
+`/.sekisho/api/v1/version` returns JSON. A product-version difference is only
+a warning; an API-version difference, malformed response, or unreachable
+endpoint stops the client.
+
+**Fix.** Correct the URL or pin, restore the daemon, or install a client with a
+compatible management API version. The packaged Web UI retries every five
+seconds through `Restart=on-failure`, so it converges after the daemon becomes
+reachable.
+
 ## Every management API call returns 503
 
 The daemon started but could not reach the service database, so it is in

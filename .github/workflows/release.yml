@@ -192,6 +192,46 @@ jobs:
               cp ../*.deb out/
             '
 
+      - name: Verify management clients install without the daemon
+        run: |
+          set -euo pipefail
+          for package in out/sekisho-cli_*.deb out/sekisho-webui_*.deb; do
+            if dpkg-deb -f "$package" Depends | grep -Eq '(^|, )sekishod([ ,(]|$)'; then
+              echo "::error::$package unexpectedly depends on sekishod"
+              exit 1
+            fi
+          done
+
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/out:/out:ro" \
+            debian:bookworm \
+            bash -ec '
+              apt-get update
+              apt-get install -y --no-install-recommends /out/sekisho-cli_*.deb
+              if dpkg-query -W sekishod >/dev/null 2>&1; then
+                echo "sekishod was unexpectedly installed" >&2
+                exit 1
+              fi
+              test -x /usr/bin/sekisho-cli
+            '
+
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/out:/out:ro" \
+            debian:bookworm \
+            bash -ec '
+              apt-get update
+              apt-get install -y --no-install-recommends /out/sekisho-webui_*.deb
+              if dpkg-query -W sekishod >/dev/null 2>&1; then
+                echo "sekishod was unexpectedly installed" >&2
+                exit 1
+              fi
+              test -x /usr/bin/sekisho-webui
+              getent passwd sekisho >/dev/null
+              test -f /etc/sekisho-webui/webui.yaml
+              test -f /lib/systemd/system/sekisho-webui.service || \
+                test -f /usr/lib/systemd/system/sekisho-webui.service
+            '
+
       - name: Verify install and same-version reinstall on merged-/usr
         run: |
           set -euo pipefail

@@ -3,20 +3,40 @@ set -e
 
 case "$1" in
     configure)
+        # The Web UI can manage a remote daemon and therefore does not depend
+        # on the sekishod package. Ensure its service account exists when the
+        # Web UI is installed on its own.
+        if ! getent passwd sekisho >/dev/null 2>&1; then
+            adduser --system --group --home /var/lib/sekisho --no-create-home --shell /usr/sbin/nologin sekisho
+        fi
+
         # On first install, seed /etc/sekisho-webui/webui.yaml from the
         # shipped example so the service has *something* to load.
         # We never overwrite an existing file — operators edit it in
-        # place. Same pattern as kaido-webui.postinst.
+        # place.
         if [ ! -f /etc/sekisho-webui/webui.yaml ]; then
             install -d -m 0755 /etc/sekisho-webui
-            cp /etc/sekisho-webui/webui.yaml.example \
-               /etc/sekisho-webui/webui.yaml
-            chmod 0644 /etc/sekisho-webui/webui.yaml
+            install -m 0640 -o root -g sekisho \
+                /etc/sekisho-webui/webui.yaml.example \
+                /etc/sekisho-webui/webui.yaml
         fi
 
         # The Web UI is optional. debian/rules installs its unit with
-        # --no-enable --no-start, so operators opt in explicitly.
+        # --no-enable --no-start, so operators opt in explicitly. The base
+        # unit remains independent of any daemon on the same host.
         ;;
 esac
 
 #DEBHELPER#
+
+case "$1" in
+    configure)
+        # Upgrade only a running instance to the new binary. Checking active
+        # state separately preserves both enabled-but-stopped and
+        # disabled-but-manually-active operator choices.
+        if [ -d /run/systemd/system ] && \
+           systemctl --quiet is-active sekisho-webui.service; then
+            deb-systemd-invoke restart sekisho-webui.service >/dev/null || true
+        fi
+        ;;
+esac

@@ -14,7 +14,7 @@ override_dh_auto_build:
 
 # Multi-binary-package layout:
 #   sekishod      — daemon binary, systemd unit, /etc/default/sekishod
-#   sekisho-cli   — CLI binary only (depends on sekishod for version match)
+#   sekisho-cli   — standalone CLI binary
 #   sekisho-webui — webui binary, systemd unit, /etc/sekisho-webui/webui.yaml.example
 # Each binary lands in its own debian/<pkg>/ tree, which dh_install /
 # dh_systemd_*/dh_installdirs then assemble into one .deb per package.
