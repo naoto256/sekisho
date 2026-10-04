@@ -18,11 +18,24 @@ fn saml_mapping(saml: &Value, key: &str) -> String {
         .to_string()
 }
 
-pub fn list(items: &[Value]) -> Markup {
+/// The IdP list. `default_idp_id` is the daemon-wide default from the config,
+/// if one is set; the row with that id gets a "Default" badge.
+/// `None` means either that no default is configured or that the auxiliary
+/// config fetch was unavailable; both cases render the list without a badge.
+///
+/// The default is chosen on the General page, not here, so the intro text and
+/// the badge both link to that form's Sessions section (`/general#sessions`)
+/// instead of offering a control of their own.
+pub fn list(items: &[Value], default_idp_id: Option<&str>) -> Markup {
     html! {
         hgroup {
             h2 { "Identity Providers" }
-            p class="muted" { "The OIDC or SAML IdPs Sekisho trusts for user authentication." }
+            p class="muted" {
+                "The OIDC or SAML IdPs Sekisho trusts for user authentication. "
+                "Choose the default under "
+                a href="/general#sessions" { "General → Sessions" }
+                "."
+            }
         }
         p class="toolbar" {
             a href="/idps/new" role="button" class="primary" { "Add identity provider" }
@@ -35,6 +48,15 @@ pub fn list(items: &[Value]) -> Markup {
                         td {
                             @if let Some(id) = extract_id(item) {
                                 a href=(format!("/idps/{id}")) { (render_cell(item, "name")) }
+                                @if default_idp_id == Some(id.as_str()) {
+                                    " "
+                                    a
+                                        href="/general#sessions"
+                                        class="pill enabled default-idp-badge"
+                                        title="Change the default IdP in General → Sessions" {
+                                        "Default"
+                                    }
+                                }
                             } @else {
                                 (render_cell(item, "name"))
                             }
@@ -177,5 +199,39 @@ fn form_body(item: Option<&Value>) -> Markup {
                 a href="/idps" role="button" class="secondary outline" { "Cancel" }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn list_marks_only_the_configured_default_and_links_to_sessions() {
+        let items = vec![
+            json!({"id": "idp-1", "name": "Primary", "type": "oidc"}),
+            json!({"id": "idp-2", "name": "Backup", "type": "saml"}),
+        ];
+
+        let rendered = list(&items, Some("idp-2")).into_string();
+
+        assert_eq!(rendered.matches("default-idp-badge").count(), 1);
+        assert!(rendered.contains("href=\"/general#sessions\""));
+        assert!(rendered.contains(">Default</a>"));
+        let badge_pos = rendered.find("default-idp-badge").expect("default badge");
+        let backup_pos = rendered.find(">Backup</a>").expect("backup IdP");
+        assert!(backup_pos < badge_pos, "badge must be attached to Backup");
+    }
+
+    #[test]
+    fn list_has_no_default_badge_when_default_is_unset() {
+        let items = vec![json!({"id": "idp-1", "name": "Primary", "type": "oidc"})];
+
+        let rendered = list(&items, None).into_string();
+
+        assert!(!rendered.contains("default-idp-badge"));
+        assert!(rendered.contains("General → Sessions"));
     }
 }
