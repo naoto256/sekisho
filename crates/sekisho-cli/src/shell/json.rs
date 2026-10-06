@@ -80,28 +80,6 @@ pub(super) fn print_json(v: &Value) {
     }
 }
 
-pub(super) fn strip_server_fields(v: &Value) -> Value {
-    const STRIP: &[&str] = &[
-        "id",
-        "created_at",
-        "updated_at",
-        "prefix",
-        "key_hash",
-        "last_used_at",
-    ];
-    if let Value::Object(map) = v {
-        let mut clean = Map::new();
-        for (k, v) in map {
-            if !STRIP.contains(&k.as_str()) {
-                clean.insert(k.clone(), v.clone());
-            }
-        }
-        Value::Object(clean)
-    } else {
-        v.clone()
-    }
-}
-
 /// Loose UUID shape check: 8-4-4-4-12 hex. Good enough to tell a
 /// pasted UUID from an IdP name without pulling in the `uuid` crate
 /// for one predicate.
@@ -221,28 +199,6 @@ mod tests {
             base,
             json!({ "access": { "policy": "b", "public": false } })
         );
-    }
-
-    #[test]
-    fn strip_server_fields_removes_metadata() {
-        let v = json!({
-            "id": "abc",
-            "name": "app",
-            "created_at": "2026-01-01",
-            "updated_at": "2026-01-02",
-            "prefix": "p",
-            "key_hash": "h",
-            "last_used_at": null,
-            "custom": 1
-        });
-        let stripped = strip_server_fields(&v);
-        assert_eq!(stripped, json!({ "name": "app", "custom": 1 }));
-    }
-
-    #[test]
-    fn strip_server_fields_preserves_non_objects() {
-        let v = json!([1, 2, 3]);
-        assert_eq!(strip_server_fields(&v), v);
     }
 
     #[test]

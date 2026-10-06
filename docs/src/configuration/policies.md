@@ -381,28 +381,3 @@ expression and it stops parsing.
 
 `edit-expr` opens the pending value in an editor instead, which is
 easier for anything spanning more than a line.
-
-## HTTP and YAML examples
-
-Author multiple policies inside a YAML import file:
-
-```yaml
-policy executive:
-  expr: |
-    claim.groups in ["c-suite", "vp"]
-
-policy soc-from-office:
-  expr: |
-    # SOC team from the office only
-    claim.groups == "soc"
-    and client.ip in ["192.168.0.0/24"]
-
-policy exec-or-soc:
-  expr: |
-    policy.executive
-    or policy.soc-from-office
-```
-
-The same parser used at runtime validates each `expr` block on
-import; failures abort the import with a line/column message
-identifying which policy is at fault.

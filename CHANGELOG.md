@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- Remove the `sekisho-cli` `export` and `import` commands from both operational
+  and configuration mode immediately, with no deprecation period and no
+  replacement command. Import deleted routes and identity providers before
+  recreating them, export omitted identity-provider secrets and policies, and
+  it continued past per-item failures, so the commands could leave a partial
+  configuration.
+  Use the database and master-key backups described under
+  [Operating → Overview § Backups](https://naoto256.github.io/sekisho/docs/operating/day-to-day.html#backups)
+  instead.
+  The separately documented YAML policy import never existed.
+
 ## [0.1.1] - 2026-10-04
 
 ### Added

@@ -34,7 +34,7 @@ Design pillars:
 
 ## Status
 
-Pre-1.0 (`0.1.x`). Expect breaking changes between minor releases until 1.0.
+Pre-1.0 (`0.1.x`). Breaking changes may occur before 1.0.
 See [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start

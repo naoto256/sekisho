@@ -46,8 +46,8 @@ commands:
 
 | Mode          | Prompt     | Available commands                                                                         |
 |---------------|------------|--------------------------------------------------------------------------------------------|
-| Operational   | `sekisho@iap>`  | `show`, `create api-key`, `delete <route|idp|certificate|api-key|session>`, `enable/disable route`, `upload certificate`, `add/activate/retire/rotate encryption-key`, `export`, `import` |
-| Configuration | `sekisho@iap#`  | `show`, `edit <route|idp|policy|sekisho|instance>`, `create <route|idp|policy>`, `delete <route|idp|policy>`, `export`, `import` |
+| Operational   | `sekisho@iap>`  | `show`, `create api-key`, `delete <route|idp|certificate|api-key|session>`, `enable/disable route`, `upload certificate`, `add/activate/retire/rotate encryption-key` |
+| Configuration | `sekisho@iap#`  | `show`, `edit <route|idp|policy|sekisho|instance>`, `create <route|idp|policy>`, `delete <route|idp|policy>` |
 
 Enter configuration mode with `configure`, leave with `exit`.
 
