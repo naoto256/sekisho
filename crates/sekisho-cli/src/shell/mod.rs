@@ -32,8 +32,8 @@ use help::{print_config_help, print_operational_help};
 use names::{prefetch_all_names, resource_is_allowed, resource_names_for};
 use ops::{
     cmd_activate_encryption_key, cmd_add_encryption_key, cmd_create_api_key, cmd_delete,
-    cmd_export, cmd_import, cmd_retire_encryption_key, cmd_rotate_encryption_key,
-    cmd_set_route_enabled, cmd_show, cmd_show_all, cmd_upload_certificate,
+    cmd_retire_encryption_key, cmd_rotate_encryption_key, cmd_set_route_enabled, cmd_show,
+    cmd_show_all, cmd_upload_certificate,
 };
 
 #[derive(PartialEq, Clone, Copy)]
@@ -52,8 +52,6 @@ const OPERATIONAL_VERBS: &[&str] = &[
     "disable",
     "upload",
     "configure",
-    "export",
-    "import",
     // DEK ring rotation verbs. Each takes the singular `encryption-key`
     // resource name, consistent with `show encryption-key`.
     "add",
@@ -65,9 +63,7 @@ const OPERATIONAL_VERBS: &[&str] = &[
     "help",
     "?",
 ];
-const CONFIG_VERBS: &[&str] = &[
-    "show", "edit", "create", "delete", "export", "import", "exit", "help", "?",
-];
+const CONFIG_VERBS: &[&str] = &["show", "edit", "create", "delete", "exit", "help", "?"];
 
 /// Expand a verb prefix to the unique matching entry in `candidates`, so
 /// `conf<Enter>` runs `configure` without a tab. Exact matches win over
@@ -227,8 +223,6 @@ pub async fn run(client: ApiClient) {
                         eprintln!("usage: delete <{names}> <name-or-id>");
                     }
                 }
-                "export" => cmd_export(&client, &parts).await,
-                "import" => cmd_import(&client, &parts, &mut rl).await,
                 "exit" => {
                     mode = ShellMode::Operational;
                     if let Some(h) = rl.helper_mut() {
@@ -345,8 +339,6 @@ pub async fn run(client: ApiClient) {
                     }
                     _ => eprintln!("usage: rotate encryption-key"),
                 },
-                "export" => cmd_export(&client, &parts).await,
-                "import" => cmd_import(&client, &parts, &mut rl).await,
                 "exit" | "quit" => break,
                 "help" | "?" => print_operational_help(),
                 other => eprintln!("unknown command: {other}  (type ? for help)"),
@@ -387,7 +379,7 @@ mod tests {
     #[test]
     fn expand_verb_unique_prefix() {
         assert_eq!(expand_verb("conf", OPERATIONAL_VERBS), "configure");
-        // `enable` and `exit`/`export` share `e`, but `en` is unique.
+        // `enable` and `exit` share `e`, but `en` is unique.
         assert_eq!(expand_verb("en", OPERATIONAL_VERBS), "enable");
     }
 
@@ -408,5 +400,15 @@ mod tests {
     #[test]
     fn expand_verb_no_match_returns_input() {
         assert_eq!(expand_verb("banana", OPERATIONAL_VERBS), "banana");
+    }
+
+    /// The verb tables feed prefix expansion and completion, while help text
+    /// and dispatch are written separately. Pin the registered surface here.
+    #[test]
+    fn export_and_import_are_not_registered_verbs() {
+        for verbs in [OPERATIONAL_VERBS, CONFIG_VERBS] {
+            assert!(!verbs.contains(&"export"));
+            assert!(!verbs.contains(&"import"));
+        }
     }
 }

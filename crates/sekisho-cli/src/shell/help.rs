@@ -32,8 +32,6 @@ pub(super) fn operational_help() -> String {
                                Retire an inactive encryption key
   rotate encryption-key        Re-encrypt stored data with the active key
   configure                    Enter configuration mode
-  export <file.conf>           Export config to file
-  import <file.conf>           Import config from file
   help / ?                     Show this help
   exit / quit                  Exit the shell
 
@@ -61,8 +59,6 @@ pub(super) fn config_help() -> String {
   edit <{edit}> [name]    Enter edit mode
   create <{create}> <name>         Create new (then set/commit)
   delete <{delete}> <name-or-id>   Delete
-  export <file.conf>                Export config to file
-  import <file.conf>                Import config from file
   help / ?                          Show this help
   exit                              Return to operational mode"#
     )
@@ -134,6 +130,16 @@ mod tests {
         let edit = edit_help();
         for verb in super::super::edit::edit_verbs() {
             assert!(edit.contains(verb), "missing edit verb {verb}");
+        }
+    }
+
+    /// Help is independent of verb registration and completion, so lock its
+    /// command shapes against partially reviving export or import.
+    #[test]
+    fn export_and_import_command_syntax_is_not_documented() {
+        for help in [operational_help(), config_help()] {
+            assert!(!help.contains("export <file.conf>"));
+            assert!(!help.contains("import <file.conf>"));
         }
     }
 }

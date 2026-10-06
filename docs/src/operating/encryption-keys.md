@@ -98,7 +98,7 @@ What the response looks like instead:
    newly generated KEK, and a new service database. Do not carry the
    old host forward.
 2. Recreate the configuration from a source you trust: your own
-   infrastructure-as-code, an export taken before the compromise, or by
+   infrastructure-as-code, records you keep outside the deployment, or by
    hand. Routes, IdPs and policies are ordinary configuration and can
    be re-entered.
 3. **Rotate every credential the old deployment held, at its source.**

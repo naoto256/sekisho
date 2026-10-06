@@ -1,19 +1,15 @@
 //! Operational + config-mode commands that don't enter edit context:
 //! show / show-all / delete / api-key creation / proxy certificate uploads /
-//! route enable-disable / DEK ring lifecycle / export / import.
+//! route enable-disable / DEK ring lifecycle.
 
 use sekisho_api_protocol::api_paths;
 use serde_json::{Map, Value};
 
-use rustyline::Editor;
-use rustyline::history::DefaultHistory;
-
 use crate::api::ApiClient;
 use crate::resources::{is_singleton, resource_api_path};
 
-use super::completion::ShellHelper;
 use super::idp_ref::annotate_idp_refs;
-use super::json::{print_json, strip_server_fields};
+use super::json::print_json;
 use super::names::{instance_label, refresh_names, store_resource_names};
 use super::render::{idp_name_map, render_sessions_table, route_status};
 
@@ -387,185 +383,6 @@ pub(super) async fn cmd_delete(client: &ApiClient, parts: &[&str]) {
         }
         Err(e) => eprintln!("error: {e}"),
     }
-}
-
-// ═══════════════════════ Export / Import ═══════════════════════
-
-pub(super) async fn cmd_export(client: &ApiClient, parts: &[&str]) {
-    if parts.len() < 2 {
-        eprintln!("usage: export <file.conf>");
-        return;
-    }
-    let path = parts[1];
-
-    eprint!("exporting routes, idps, config ... ");
-
-    let routes = match client.get_list(api_paths::ROUTES).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("failed to get routes: {e}");
-            return;
-        }
-    };
-    let idps = match client.get_list(api_paths::IDPS).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("failed to get idps: {e}");
-            return;
-        }
-    };
-    let config = match client.get(api_paths::CONFIG).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("failed to get config: {e}");
-            return;
-        }
-    };
-
-    let export = serde_json::json!({
-        "version": 1,
-        "routes": routes,
-        "idps": idps,
-        "config": config,
-    });
-
-    let content = match serde_json::to_string_pretty(&export) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("serialization error: {e}");
-            return;
-        }
-    };
-
-    match std::fs::write(path, &content) {
-        Ok(_) => {
-            let route_count = routes.len();
-            let idp_count = idps.len();
-            eprintln!("ok ({route_count} routes, {idp_count} idps) -> {path}");
-            if idp_count > 0 {
-                eprintln!("  note: IdP client secrets are REDACTED in export.");
-                eprintln!("  after import, you must re-set secrets via 'edit idp <name>'.");
-            }
-        }
-        Err(e) => eprintln!("failed to write file: {e}"),
-    }
-}
-
-pub(super) async fn cmd_import(
-    client: &ApiClient,
-    parts: &[&str],
-    rl: &mut Editor<ShellHelper, DefaultHistory>,
-) {
-    if parts.len() < 2 {
-        eprintln!("usage: import <file.conf>");
-        return;
-    }
-    let path = parts[1];
-
-    let content = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("failed to read file: {e}");
-            return;
-        }
-    };
-
-    let import: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("invalid JSON: {e}");
-            return;
-        }
-    };
-
-    let version = import.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
-    if version != 1 {
-        eprintln!("unsupported file version: {version} (expected 1)");
-        return;
-    }
-
-    let new_routes = import.get("routes").and_then(|v| v.as_array());
-    let new_idps = import.get("idps").and_then(|v| v.as_array());
-    let new_config = import.get("config");
-
-    let route_count = new_routes.map(|a| a.len()).unwrap_or(0);
-    let idp_count = new_idps.map(|a| a.len()).unwrap_or(0);
-    let has_config = new_config.is_some();
-
-    eprintln!("file contains: {route_count} routes, {idp_count} idps, config: {has_config}");
-    eprintln!("this will DELETE all existing routes and idps, then recreate from file.");
-
-    let confirm = match rl.readline("proceed? [y/N] ") {
-        Ok(line) => line.trim().to_lowercase(),
-        Err(_) => return,
-    };
-    if !matches!(confirm.as_str(), "y" | "yes") {
-        eprintln!("aborted");
-        return;
-    }
-
-    eprint!("deleting existing routes ... ");
-    if let Ok(existing) = client.get_list(api_paths::ROUTES).await {
-        for route in &existing {
-            if let Some(id) = route.get("id").and_then(|v| v.as_str())
-                && let Err(e) = client.delete(&format!("/routes/{id}")).await
-            {
-                eprintln!("\n  warning: failed to delete route {id}: {e}");
-            }
-        }
-        eprintln!("{} deleted", existing.len());
-    }
-
-    eprint!("deleting existing idps ... ");
-    if let Ok(existing) = client.get_list(api_paths::IDPS).await {
-        for idp in &existing {
-            if let Some(id) = idp.get("id").and_then(|v| v.as_str())
-                && let Err(e) = client.delete(&format!("/idps/{id}")).await
-            {
-                eprintln!("\n  warning: failed to delete idp {id}: {e}");
-            }
-        }
-        eprintln!("{} deleted", existing.len());
-    }
-
-    if let Some(idps) = new_idps {
-        eprint!("importing {idp_count} idps ... ");
-        let mut ok = 0;
-        for idp in idps {
-            let clean = strip_server_fields(idp);
-            match client.post(api_paths::IDPS, &clean).await {
-                Ok(_) => ok += 1,
-                Err(e) => eprintln!("\n  error: {e}"),
-            }
-        }
-        eprintln!("{ok} created");
-        if idp_count > 0 {
-            eprintln!("  warning: IdP client secrets are REDACTED. Re-set via 'edit idp <name>'.");
-        }
-    }
-
-    if let Some(routes) = new_routes {
-        eprint!("importing {route_count} routes ... ");
-        let mut ok = 0;
-        for route in routes {
-            let clean = strip_server_fields(route);
-            match client.post(api_paths::ROUTES, &clean).await {
-                Ok(_) => ok += 1,
-                Err(e) => eprintln!("\n  error: {e}"),
-            }
-        }
-        eprintln!("{ok} created");
-    }
-
-    if let Some(config) = new_config {
-        eprint!("importing config ... ");
-        match client.patch(api_paths::CONFIG, config).await {
-            Ok(_) => eprintln!("ok"),
-            Err(e) => eprintln!("error: {e}"),
-        }
-    }
-
-    eprintln!("import complete");
 }
 
 // ═══════════════════════ Helpers ═══════════════════════

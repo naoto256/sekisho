@@ -312,6 +312,22 @@ mod tests {
         );
     }
 
+    /// Completion derives from the registered verbs, so pin the resulting
+    /// user-visible suggestions against reviving export or import.
+    #[test]
+    fn export_and_import_are_not_completed() {
+        let operational = ShellHelper::new();
+        let operational_verbs = complete_displays(&operational, "");
+        assert!(!operational_verbs.iter().any(|verb| verb == "export"));
+        assert!(!operational_verbs.iter().any(|verb| verb == "import"));
+
+        let mut config = ShellHelper::new();
+        config.mode = ShellMode::Config;
+        let config_verbs = complete_displays(&config, "");
+        assert!(!config_verbs.iter().any(|verb| verb == "export"));
+        assert!(!config_verbs.iter().any(|verb| verb == "import"));
+    }
+
     /// Instance-name completion follows the cache, and singletons complete
     /// without one because they have no name to look up.
     #[test]
