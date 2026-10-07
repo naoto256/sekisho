@@ -54,12 +54,16 @@ pub(super) fn render_sessions_table(
         .iter()
         .map(|s| {
             let id_full = s.get("id").and_then(|v| v.as_str()).unwrap_or("-");
-            // 8-char prefix + ellipsis matches webui's truncation; full
-            // UUID is one `show sessions <id>` away if needed.
-            let id_short = if id_full.len() > 8 {
-                format!("{}...", &id_full[..8])
+            // An 8-character prefix plus an ellipsis keeps the table narrow;
+            // `show session <id>` prints the whole record. Count characters,
+            // not bytes: the id is whatever string the server returned, and
+            // slicing at byte 8 panics inside a multi-byte character.
+            let mut chars = id_full.chars();
+            let prefix: String = chars.by_ref().take(8).collect();
+            let id_short = if chars.next().is_some() {
+                format!("{prefix}...")
             } else {
-                id_full.to_string()
+                prefix
             };
             let user = s
                 .get("user_id")
@@ -156,6 +160,22 @@ mod tests {
         ];
         let out = render_sessions_table(&items, &idps, fixed_now());
         assert_eq!(out.lines().count(), 3, "header + 2 rows");
+    }
+
+    #[test]
+    fn render_sessions_table_truncates_non_ascii_ids_on_character_boundaries() {
+        let items = vec![json!({
+            "id": "あいうえおかきくけ",
+            "user_id": "alice@example.com",
+            "created_at": 1777114800i64,
+            "expires_at": 1777201200i64,
+        })];
+
+        let out = render_sessions_table(&items, &std::collections::HashMap::new(), fixed_now());
+        assert!(
+            out.contains("あいうえおかきく..."),
+            "unexpected table: {out}"
+        );
     }
 
     #[test]
