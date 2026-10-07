@@ -407,12 +407,7 @@ async fn wait_for_webui(
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         child.assert_running();
-        if let Ok(response) = client
-            .get(format!("{base_url}/healthz"))
-            .header(reqwest::header::AUTHORIZATION, VALID_BASIC)
-            .send()
-            .await
-        {
+        if let Ok(response) = client.get(format!("{base_url}/healthz")).send().await {
             return response;
         }
         assert!(
@@ -453,6 +448,28 @@ async fn actual_binary_enforces_guard_csrf_and_security_headers() {
     let response = wait_for_webui(&mut child, &client, &base_url).await;
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     assert_security_headers(response.headers());
+    assert_eq!(
+        response.headers().get(reqwest::header::CACHE_CONTROL),
+        Some(&reqwest::header::HeaderValue::from_static("no-store")),
+        "unauthenticated healthz must preserve the no-store boundary"
+    );
+    assert!(
+        response
+            .headers()
+            .get(reqwest::header::SET_COOKIE)
+            .is_none(),
+        "healthz must remain outside the CSRF layer"
+    );
+    assert_eq!(response.text().await.expect("read health body"), "ok");
+
+    let response = client
+        .get(&base_url)
+        .header(reqwest::header::AUTHORIZATION, VALID_BASIC)
+        .send()
+        .await
+        .expect("request rendered page");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_security_headers(response.headers());
     let set_cookie = response
         .headers()
         .get(reqwest::header::SET_COOKIE)
@@ -465,20 +482,6 @@ async fn actual_binary_enforces_guard_csrf_and_security_headers() {
     assert!(set_cookie.contains("; HttpOnly"));
     assert!(set_cookie.contains("; SameSite=Lax"));
     let csrf_token = csrf_cookie_token(set_cookie).to_string();
-    assert_eq!(response.text().await.expect("read health body"), "ok");
-
-    let response = client
-        .get(&base_url)
-        .header(reqwest::header::AUTHORIZATION, VALID_BASIC)
-        .header(
-            reqwest::header::COOKIE,
-            format!("_sekisho_csrf={csrf_token}"),
-        )
-        .send()
-        .await
-        .expect("request rendered page");
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    assert_security_headers(response.headers());
     let page = response.text().await.expect("read rendered page");
     assert_eq!(rendered_csrf_token(&page), csrf_token);
 
@@ -589,7 +592,7 @@ async fn actual_binary_enforces_guard_csrf_and_security_headers() {
     );
 
     for authorization in [None, Some(BAD_BASIC)] {
-        let mut request = client.get(format!("{base_url}/healthz"));
+        let mut request = client.get(format!("{base_url}/"));
         if let Some(value) = authorization {
             request = request.header(reqwest::header::AUTHORIZATION, value);
         }
@@ -600,9 +603,38 @@ async fn actual_binary_enforces_guard_csrf_and_security_headers() {
             response
                 .headers()
                 .get(reqwest::header::WWW_AUTHENTICATE)
-                .expect("Basic challenge"),
-            r#"Basic realm="sekisho-webui""#
+                .unwrap(),
+            "Basic realm=\"sekisho-webui\""
         );
+        assert_eq!(
+            upstream.request_count(),
+            upstream_before_rejections,
+            "guard rejection must not reach the upstream"
+        );
+    }
+
+    for authorization in [None, Some(BAD_BASIC)] {
+        let mut request = client.get(format!("{base_url}/healthz"));
+        if let Some(value) = authorization {
+            request = request.header(reqwest::header::AUTHORIZATION, value);
+        }
+        let response = request.send().await.expect("send public health request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_security_headers(response.headers());
+        assert_eq!(
+            response
+                .headers()
+                .get(reqwest::header::CACHE_CONTROL)
+                .unwrap(),
+            "no-store"
+        );
+        assert!(
+            response
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .is_none()
+        );
+        assert_eq!(response.text().await.expect("read health response"), "ok");
     }
 
     assert_eq!(

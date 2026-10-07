@@ -10,9 +10,10 @@
 //! install has no credential at all, and an operator who lands on a blank 401
 //! has no way to discover that they need to visit `/setup`; redirecting first
 //! means the unconfigured case has an obvious next step while the
-//! misconfigured case still gets a proper refusal. Only `/setup`, the static
-//! assets and `/healthz` are exempt, because each of those has to work before
-//! a credential exists.
+//! misconfigured case still gets a proper refusal. Only `/setup` and the static
+//! assets are exempt. `/healthz` is not part of that stack at all: it is
+//! mounted beside it (see [`router`]), so a probe that carries no credential
+//! gets its answer instead of a redirect to `/setup` or the guard's 401.
 
 pub mod api_keys;
 pub mod certificates;
@@ -51,7 +52,7 @@ pub async fn require_credential(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let path = request.uri().path().to_string();
-    let exempt = path == "/setup" || path.starts_with("/_assets") || path == "/healthz";
+    let exempt = path == "/setup" || path.starts_with("/_assets");
     if !exempt && !state.cred.read().await.is_set() {
         return Redirect::to("/setup").into_response();
     }
@@ -69,7 +70,6 @@ pub fn router(state: AppState) -> Router {
     let mut routes_ = Router::new()
         .route("/", get(home::index))
         .route("/setup", get(setup::show).post(setup::submit))
-        .route("/healthz", get(|| async { "ok" }))
         // Routes
         .route("/routes", get(routes::list).post(routes::create))
         .route("/routes/new", get(routes::new_form))
@@ -169,17 +169,28 @@ pub fn router(state: AppState) -> Router {
         // keeps its own caching posture.
         .layer(middleware::from_fn(no_store_cache));
 
-    // Static bundled assets are merged at the top level so they are not
-    // subject to CSRF / credential-required / body-limit layers — they're
-    // cacheable public files, not authenticated operations.
-    routes_.merge(crate::assets::router()).with_state(state)
+    // `/healthz` and the bundled assets sit outside `routes_`, so none of the
+    // layers above — body limit, guard, credential redirect, CSRF — apply to
+    // them. Assets are public, cacheable files. `/healthz` answers "the
+    // process is up and routing": it does not contact the daemon and says
+    // nothing about whether a credential is installed. It sets `no-store`
+    // itself because it no longer inherits that from `routes_`.
+    Router::new()
+        .route(
+            "/healthz",
+            get(|| async { "ok" }).layer(middleware::from_fn(no_store_cache)),
+        )
+        .merge(routes_)
+        .merge(crate::assets::router())
+        .with_state(state)
 }
 
 /// Tag every admin-page response as `Cache-Control: no-store` so a
 /// browser back-button or refresh re-fetches the current server state
 /// instead of replaying a snapshot from a previous deploy. Static
 /// assets are not affected — they're served by the unmounted asset
-/// router and explicitly want long-lived caching.
+/// router and explicitly want long-lived caching. `/healthz` applies
+/// this to itself so a liveness answer is never served from a cache.
 async fn no_store_cache(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let mut resp = next.run(req).await;
     resp.headers_mut().insert(
