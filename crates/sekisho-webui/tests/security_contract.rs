@@ -511,6 +511,33 @@ async fn actual_binary_enforces_guard_csrf_and_security_headers() {
     let upstream_before_rejections = upstream.request_count();
 
     let response = client
+        .post(format!("{base_url}/setup"))
+        .header(reqwest::header::AUTHORIZATION, VALID_BASIC)
+        .header(
+            reqwest::header::COOKIE,
+            format!("_sekisho_csrf={csrf_token}"),
+        )
+        .header("x-csrf-token", &csrf_token)
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .body("api_key=replacement-key")
+        .send()
+        .await
+        .expect("submit setup after configuration");
+    assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers().get(reqwest::header::LOCATION).unwrap(),
+        "/"
+    );
+    assert_eq!(
+        upstream.request_count(),
+        upstream_before_rejections,
+        "configured setup must not probe or replace the active credential"
+    );
+
+    let response = client
         .get(format!("{base_url}/general/backup/export"))
         .header(reqwest::header::AUTHORIZATION, VALID_BASIC)
         .header(

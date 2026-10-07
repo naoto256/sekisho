@@ -7,9 +7,12 @@
 //!   Handler arguments are exactly the sort of thing that ends up in a
 //!   `tracing` line during debugging, and a derived `Debug` would put an admin
 //!   credential in the log.
-//! - [`show`] redirects away when a credential is already installed, so the
-//!   page cannot be used to silently replace a working credential with a
-//!   typo — or by a CSRF-shaped request from elsewhere.
+//! - [`show`] and [`submit`] both redirect away when a credential is already
+//!   installed, so neither the page nor a direct POST can be used to silently
+//!   replace a working credential with a typo — or by a CSRF-shaped request
+//!   from elsewhere. The check in [`submit`] is a read that the install
+//!   follows only after the probe, so two submissions racing on an
+//!   unconfigured instance can both pass it.
 //!
 //! The submitted key is verified against the daemon before being stored;
 //! accepting it first would leave the UI configured with something that cannot
@@ -52,7 +55,15 @@ impl std::fmt::Debug for SetupForm {
 }
 
 /// Verify the submitted key against the daemon and install it on success.
+/// Only redirects when a credential is already installed.
 pub async fn submit(State(state): State<AppState>, Form(form): Form<SetupForm>) -> Response {
+    // Setup is a one-time bootstrap path, so stop before the submitted key is
+    // looked at, probed against the daemon, or installed. (The extractor has
+    // already deserialized the form body by this point.)
+    if state.cred.read().await.is_set() {
+        return Redirect::to("/").into_response();
+    }
+
     let key = form.api_key.trim().to_string();
     if key.is_empty() {
         return render_setup_page(
