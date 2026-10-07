@@ -81,8 +81,10 @@ pub async fn get(State(store): State<Store>, Path(id): Path<Uuid>) -> Result<imp
 }
 
 /// Body of `POST /certs`. One field, so a request carrying anything else is
-/// almost certainly meant for `/certs/upload`.
+/// almost certainly meant for `/certs/upload`; unknown fields fail
+/// deserialization instead of being ignored.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IssueCertRequest {
     pub domain: String,
 }
@@ -212,7 +214,10 @@ pub async fn queue_status(
 
 /// Body of `POST /certs/upload`. Validity dates are deliberately absent —
 /// the server parses them out of `cert_pem` instead of trusting the caller.
+/// A request that sends them anyway, or any other unknown field, fails
+/// deserialization rather than having the extra fields dropped.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UploadCertRequest {
     pub domain: String,
     pub cert_pem: String,
@@ -228,8 +233,9 @@ pub struct UploadCertRequest {
 /// new cert only if that row was loaded.
 ///
 /// Separate from the ACME `POST /certs` endpoint so the two flows
-/// don't share a request shape — a missing / extra field should be
-/// a parse error, not a silent mode switch.
+/// don't share a request shape — a missing or extra field is a parse
+/// error (both request types deny unknown fields), not a silent mode
+/// switch.
 pub async fn upload(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
@@ -300,6 +306,41 @@ mod tests {
     use axum::http::Request;
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    #[test]
+    fn certificate_request_shapes_reject_unknown_fields() {
+        assert!(
+            serde_json::from_value::<IssueCertRequest>(serde_json::json!({
+                "domain": "example.com",
+                "cert_pem": "unexpected"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<UploadCertRequest>(serde_json::json!({
+                "domain": "example.com",
+                "cert_pem": "certificate",
+                "key_pem": "key",
+                "not_after": 4_102_444_800_i64
+            }))
+            .is_err()
+        );
+
+        assert!(
+            serde_json::from_value::<IssueCertRequest>(serde_json::json!({
+                "domain": "example.com"
+            }))
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<UploadCertRequest>(serde_json::json!({
+                "domain": "example.com",
+                "cert_pem": "certificate",
+                "key_pem": "key"
+            }))
+            .is_ok()
+        );
+    }
 
     #[tokio::test]
     async fn queue_full_router_returns_standard_service_unavailable_without_order() {
