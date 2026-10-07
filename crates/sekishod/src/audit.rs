@@ -13,9 +13,9 @@
 //! comes from much earlier in the request lifecycle (the moment the
 //! TCP-accepted axum router runs). Centralising the middleware here
 //! keeps both the management API (`api/mod.rs`) and the proxy
-//! (`proxy/mod.rs`) hooked through the same code path, so any future
-//! correlation work (request span, propagation header naming) lands in
-//! one place.
+//! (`proxy/mod.rs`) hooked through the same code path, so correlation
+//! work (the request span, propagation header naming) lands in one
+//! place.
 //!
 //! ## Wire shape
 //!
@@ -25,7 +25,8 @@
 //! response it sees against its own log line. Otherwise we mint a
 //! UUID v7 — time-ordered IDs make ad-hoc journalctl scans pleasant
 //! without giving up uniqueness. The id is then echoed on the
-//! response and made available to handlers as a request extension.
+//! response, made available to handlers as a request extension, and
+//! carried on an `http.request` span that wraps the rest of the request.
 //!
 //! ## Event taxonomy
 //!
@@ -87,6 +88,7 @@ use axum::extract::Request;
 use axum::http::{HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::Response;
+use tracing::Instrument;
 use uuid::Uuid;
 
 /// `tracing` target for audit-grade events. Filter on this string to
@@ -329,9 +331,10 @@ pub const REQUEST_ID_HEADER: &str = "x-request-id";
 /// re-parsing the header. Wrapped in a newtype so the extension lookup
 /// is unambiguous (axum keys extensions by type).
 ///
-/// Today no handler pulls this out — the structured tracing
-/// subscriber attaches the id via the span field recorded by the
-/// middleware, so handler `tracing::info!` calls inherit it for free.
+/// Today no handler pulls this out. Log lines get the id from the
+/// `http.request` span the middleware opens: an event emitted while
+/// the request is being handled is inside that span, and the JSON log
+/// format prints the span list, so the line carries it under `spans`.
 /// The accessor stays exposed for the case where a handler wants to
 /// surface the id in an HTTP response body.
 #[derive(Debug, Clone)]
@@ -346,8 +349,13 @@ impl RequestId {
 }
 
 /// axum middleware: ensure every inbound request carries a
-/// `RequestId`, echo it on the response, and surface it as a tracing
-/// span field so subsequent log lines auto-include it.
+/// `RequestId`, echo it on the response, and run the rest of the stack
+/// inside an `http.request` span that carries it.
+///
+/// The span is opened here rather than recorded onto `Span::current()`:
+/// `record` only fills a field the span declared when it was created,
+/// so it does nothing unless an outer layer happens to have reserved
+/// `request_id`.
 ///
 /// A caller-supplied `X-Request-ID` is honoured only when it looks
 /// like a UUID — that keeps a malicious caller from injecting
@@ -359,13 +367,8 @@ pub async fn request_id_middleware(mut req: Request, next: Next) -> Response {
     let id = inbound_id(&req).unwrap_or_else(|| Uuid::now_v7().to_string());
     req.extensions_mut().insert(RequestId(id.clone()));
 
-    // Record on the current span so downstream `tracing::info!` calls
-    // pick it up automatically when the span has reserved the field.
-    // Handlers that want their event tied back to the request can
-    // include `request_id = %req.extensions().get::<RequestId>()...`.
-    tracing::Span::current().record("request_id", tracing::field::display(&id));
-
-    let mut resp = next.run(req).await;
+    let span = tracing::info_span!("http.request", request_id = %id);
+    let mut resp = next.run(req).instrument(span).await;
     if let Ok(value) = HeaderValue::from_str(&id) {
         resp.headers_mut()
             .insert(HeaderName::from_static(REQUEST_ID_HEADER), value);
@@ -474,6 +477,118 @@ pub mod test_capture {
 mod tests {
     use super::*;
 
+    /// Re-run the named test alone in a child process.
+    ///
+    /// `tracing` caches each callsite's `Interest` once per process, not per
+    /// subscriber, so the subscriber a test installs with `set_default` shares
+    /// that cache with every other test in this binary. The span-capture tests
+    /// therefore make their assertions in a process that runs nothing else.
+    ///
+    /// Returns `true` in the parent once the child has passed, and the caller
+    /// returns without running its body. Returns `false` in the child, which
+    /// is recognised by the marker variable, and the caller runs the body.
+    /// The parent requires both the named `... ok` line and a one-test
+    /// summary, so a filter that matches nothing cannot count as a pass.
+    fn run_isolated_request_id_test(name: &str) -> bool {
+        const CHILD_MARKER: &str = "SEKISHO_REQUEST_ID_TEST_CHILD";
+        if let Some(marker) = std::env::var_os(CHILD_MARKER) {
+            assert_eq!(
+                marker,
+                std::ffi::OsStr::new(name),
+                "wrong child test marker"
+            );
+            return false;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                name,
+                "--exact",
+                "--nocapture",
+                "--format=pretty",
+                "--color=never",
+                "--test-threads=1",
+            ])
+            .env(CHILD_MARKER, name)
+            .output()
+            .expect("start isolated request-id test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let named_test_passed = stdout
+            .lines()
+            .any(|line| line == format!("test {name} ... ok"));
+        let exactly_one_passed = stdout
+            .lines()
+            .any(|line| line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;"));
+        assert!(
+            output.status.success() && named_test_passed && exactly_one_passed,
+            "isolated test {name} did not run exactly once and pass ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            output.status,
+        );
+        true
+    }
+
+    /// Records the `request_id` of each `http.request` span as it is created,
+    /// and whether the marker event from the test handler was emitted inside
+    /// such a span.
+    #[derive(Clone, Default)]
+    struct RequestSpanProbe {
+        request_ids: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        handler_event_in_request_span: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct RequestIdVisitor<'a>(&'a mut Option<String>);
+
+    impl tracing::field::Visit for RequestIdVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "request_id" {
+                *self.0 = Some(format!("{value:?}"));
+            }
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "request_id" {
+                *self.0 = Some(value.to_string());
+            }
+        }
+    }
+
+    impl<S> tracing_subscriber::Layer<S> for RequestSpanProbe
+    where
+        S: tracing::Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::span::Id,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if attrs.metadata().name() != "http.request" {
+                return;
+            }
+            let mut request_id = None;
+            attrs.record(&mut RequestIdVisitor(&mut request_id));
+            if let Some(request_id) = request_id {
+                self.request_ids.lock().unwrap().push(request_id);
+            }
+        }
+
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().target() != "request_span_test" {
+                return;
+            }
+            let in_request_span = ctx
+                .event_scope(event)
+                .is_some_and(|scope| scope.from_root().any(|span| span.name() == "http.request"));
+            self.handler_event_in_request_span
+                .store(in_request_span, std::sync::atomic::Ordering::Release);
+        }
+    }
+
     fn req_with(header: Option<&str>) -> Request {
         let mut b = axum::http::Request::builder().uri("/");
         if let Some(v) = header {
@@ -509,6 +624,60 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn request_id_middleware_opens_a_span_around_the_handler() {
+        if run_isolated_request_id_test(
+            "audit::tests::request_id_middleware_opens_a_span_around_the_handler",
+        ) {
+            return;
+        }
+        use tower::ServiceExt;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let supplied = "0190e5e5-3a8b-7c01-9d4f-12345678abcd";
+        let probe = RequestSpanProbe::default();
+        let _guard = tracing_subscriber::registry()
+            .with(probe.clone())
+            .set_default();
+        let app = axum::Router::new()
+            .route(
+                "/",
+                axum::routing::get(|| async {
+                    tracing::info!(target: "request_span_test", "inside request handler");
+                    "ok"
+                }),
+            )
+            .layer(axum::middleware::from_fn(request_id_middleware));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .header(REQUEST_ID_HEADER, supplied)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.headers().get(REQUEST_ID_HEADER).unwrap(), supplied);
+        assert!(
+            probe
+                .request_ids
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|value| value.contains(supplied)),
+            "request span did not record the supplied id"
+        );
+        assert!(
+            probe
+                .handler_event_in_request_span
+                .load(std::sync::atomic::Ordering::Acquire),
+            "handler event was not inside the request span"
+        );
+    }
+
     // ─── End-to-end: drive a real handler-emitting code path through
     //     the capture layer and assert the audit event lands with
     //     the contracted shape. The session lifecycle is the easiest
@@ -525,6 +694,220 @@ mod tests {
         Store::new_for_test("sqlite::memory:", [0x41u8; 32], None)
             .await
             .unwrap()
+    }
+
+    #[derive(Clone, Default)]
+    struct JsonLogBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for JsonLogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn assert_handler_json_request_id(buffer: &JsonLogBuffer, field: &str, value: &str, id: &str) {
+        let bytes = buffer.0.lock().unwrap();
+        let line = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<serde_json::Value>(line).unwrap())
+            .find(|line| line["fields"][field] == value)
+            .expect("the real router handler must emit its event");
+        assert!(
+            line.get("span").is_none(),
+            "current-span output is disabled"
+        );
+        assert!(
+            line["spans"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|span| { span["name"] == "http.request" && span["request_id"] == id }),
+            "handler event must carry request_id in the JSON span list: {line}"
+        );
+    }
+
+    /// The real management and proxy routers, so the middleware is exercised
+    /// where it is actually mounted rather than on a router built for the test.
+    async fn request_id_test_routers() -> (
+        axum::Router,
+        axum::Router,
+        String,
+        std::sync::Arc<crate::shutdown::ShutdownController>,
+    ) {
+        use std::sync::Arc;
+
+        let store = fresh_store().await;
+        let key = store
+            .create_api_key(
+                "request-id-test",
+                &crate::models::api_key::ApiKeyScopeSet::from_storage(r#"["management:write"]"#)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let acme = Arc::new(crate::tls::acme::AcmeManager::new(
+            store.clone(),
+            Arc::new(crate::tls::acme::challenge::Http01Provider::new(
+                store.clone(),
+            )),
+            "https://acme.invalid/directory",
+            None,
+        ));
+        let master_key = crate::crypto::MasterKey::from_test_bytes([7; 32]);
+        let key_ring = crate::crypto::IdentityKeyRingSnapshot::from_test_bytes([9; 32]);
+        let identity = Arc::new(crate::identity::IdentityAuthority::for_test(
+            "auth.example.com",
+        ));
+        let generation =
+            crate::route_generation::RouteGeneration::new_for_test(store.clone()).await;
+        let shutdown = Arc::new(crate::shutdown::ShutdownController::new());
+        let management = crate::api::router(
+            store.clone(),
+            generation.clone(),
+            acme.clone(),
+            Arc::new(crate::tls::resolver::CertResolver::new(store.clone())),
+            master_key.clone(),
+            key_ring.clone(),
+            identity.clone(),
+            Arc::new(crate::api::local_auth::ChallengeStore::new()),
+            shutdown.clone(),
+            crate::models::config::default_acme_issuance_concurrency_limit(),
+        );
+        let proxy = crate::proxy::router(
+            store,
+            generation,
+            &[1; 64],
+            acme,
+            master_key,
+            key_ring,
+            identity,
+            true,
+            "sekisho_session".into(),
+            100,
+            shutdown.clone(),
+        );
+        (management, proxy, key.key, shutdown)
+    }
+
+    #[tokio::test]
+    async fn request_id_real_routers_include_handler_events_in_production_json_span_list() {
+        if run_isolated_request_id_test(
+            "audit::tests::request_id_real_routers_include_handler_events_in_production_json_span_list",
+        ) {
+            return;
+        }
+        use tower::ServiceExt;
+
+        let (management, proxy, key, shutdown) = request_id_test_routers().await;
+        let buffer = JsonLogBuffer::default();
+        let writer = buffer.clone();
+        // Same formatter options as the daemon's JSON log format in
+        // `runtime.rs` (no current-span object, span list on). The assertion
+        // on `spans` is only meaningful while the two agree.
+        let _guard = tracing_subscriber::fmt()
+            .json()
+            .with_current_span(false)
+            .with_span_list(true)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || writer.clone())
+            .finish()
+            .set_default();
+        let supplied = "0190e5e5-3a8b-7c01-9d4f-12345678abcd";
+        let response = management
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/.sekisho/api/v1/policies")
+                    .header("authorization", format!("Bearer {key}"))
+                    .header("content-type", "application/json")
+                    .header(REQUEST_ID_HEADER, supplied)
+                    .body(axum::body::Body::from(
+                        r#"{"name":"span-proof","expr":"claim.groups == \"staff\""}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        assert_eq!(response.headers()[REQUEST_ID_HEADER], supplied);
+        assert_handler_json_request_id(&buffer, "event", "policy.create", supplied);
+
+        let response = proxy
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/.sekisho/.well-known/acme-challenge/request-id-test")
+                    .header(REQUEST_ID_HEADER, supplied)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(response.headers()[REQUEST_ID_HEADER], supplied);
+        assert_handler_json_request_id(
+            &buffer,
+            "message",
+            "ACME challenge token not found",
+            supplied,
+        );
+        shutdown.signal();
+        shutdown
+            .join_tracked_tasks(std::time::Duration::from_secs(1))
+            .await;
+        assert_eq!(shutdown.tracked_task_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn request_id_invalid_caller_values_mint_and_echo_uuid() {
+        use tower::ServiceExt;
+
+        let app = axum::Router::new()
+            .route(
+                "/",
+                axum::routing::get(
+                    |axum::Extension(id): axum::Extension<RequestId>| async move { id.0 },
+                ),
+            )
+            .layer(axum::middleware::from_fn(request_id_middleware));
+        for supplied in [
+            axum::http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+            axum::http::HeaderValue::from_str(&"x".repeat(300)).unwrap(),
+            axum::http::HeaderValue::from_static("not-a-uuid"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/")
+                        .header(REQUEST_ID_HEADER, supplied.clone())
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let echoed = response.headers()[REQUEST_ID_HEADER].clone();
+            assert_ne!(echoed, supplied);
+            assert_eq!(
+                uuid::Uuid::parse_str(echoed.to_str().unwrap())
+                    .unwrap()
+                    .get_version_num(),
+                7
+            );
+            let body = axum::body::to_bytes(response.into_body(), 128)
+                .await
+                .unwrap();
+            assert_eq!(
+                body.as_ref(),
+                echoed.as_bytes(),
+                "handler and response must use the minted id"
+            );
+        }
     }
 
     #[tokio::test]
