@@ -23,6 +23,17 @@
 //! configured pattern means the allowlist cannot drift from what is deployed,
 //! and `//` is rejected explicitly because a protocol-relative URL reads as a
 //! path and resolves as an absolute one.
+//!
+//! A backslash, tab, CR or LF anywhere in the value is refused before either
+//! rule is applied. Browsers treat `\` as `/` in an HTTP(S) URL and drop tabs
+//! and newlines while parsing, so `/\host` or `/<TAB>/host` passes a "starts
+//! with a single slash" test here and still leaves the origin when the browser
+//! follows it. The value is returned unchanged or not at all — nothing is
+//! stripped or rewritten — which is why those characters are a rejection
+//! rather than a cleanup.
+//!
+//! Rejections log the length of the value and never the value itself: it is
+//! attacker-controlled text, and a return URL can carry secrets in its query.
 
 pub mod handoff;
 pub mod middleware;
@@ -47,10 +58,21 @@ fn record_logout(kind: &'static str) {
 #[allow(unused_imports)]
 pub use auth_idp::http::limited_response;
 
-/// Validate and sanitize a redirect URL. Only allows:
+/// Decide where a redirect may go. Returns `url` unchanged when it is allowed
+/// and `/` otherwise; it never returns a modified URL. Only allows:
 /// - Relative paths (starting with "/" but not "//")
 /// - Absolute https URLs whose hostname matches a registered route's `from` domain
+///
+/// Any value containing `\`, tab, CR or LF is refused before either rule; the
+/// module docs explain why those cannot be judged by their prefix.
 pub async fn safe_redirect(url: &str, store: &crate::store::Store) -> String {
+    // Checked on the raw string first: the relative-path test below looks only
+    // at the leading characters and would pass `/\host`.
+    if url.chars().any(|c| matches!(c, '\\' | '\t' | '\r' | '\n')) {
+        tracing::warn!(url_len = url.len(), "rejected unsafe redirect URL");
+        return "/".to_string();
+    }
+
     if url.starts_with('/') && !url.starts_with("//") {
         return url.to_string();
     }
@@ -58,25 +80,28 @@ pub async fn safe_redirect(url: &str, store: &crate::store::Store) -> String {
     let parsed = match url::Url::parse(url) {
         Ok(u) => u,
         Err(_) => {
-            tracing::warn!(url = %url, "rejected unparseable redirect URL");
+            tracing::warn!(url_len = url.len(), "rejected unparseable redirect URL");
             return "/".to_string();
         }
     };
 
     if parsed.scheme() != "https" {
-        tracing::warn!(url = %url, "rejected non-https redirect URL");
+        tracing::warn!(url_len = url.len(), "rejected non-https redirect URL");
         return "/".to_string();
     }
 
     if !parsed.username().is_empty() || parsed.password().is_some() {
-        tracing::warn!(url = %url, "rejected redirect URL with credentials");
+        tracing::warn!(
+            url_len = url.len(),
+            "rejected redirect URL with credentials"
+        );
         return "/".to_string();
     }
 
     let redirect_host = match parsed.host_str() {
         Some(h) => h,
         None => {
-            tracing::warn!(url = %url, "rejected redirect URL with no host");
+            tracing::warn!(url_len = url.len(), "rejected redirect URL with no host");
             return "/".to_string();
         }
     };
@@ -94,7 +119,10 @@ pub async fn safe_redirect(url: &str, store: &crate::store::Store) -> String {
     if allowed {
         url.to_string()
     } else {
-        tracing::warn!(url = %url, host = %redirect_host, "rejected redirect to unregistered domain");
+        tracing::warn!(
+            url_len = url.len(),
+            "rejected redirect to unregistered domain"
+        );
         "/".to_string()
     }
 }
@@ -345,6 +373,94 @@ pub async fn userinfo(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct RedirectWarningCapture {
+        fields: std::sync::Arc<std::sync::Mutex<Vec<std::collections::HashMap<String, String>>>>,
+    }
+
+    struct RedirectWarningVisitor<'a>(&'a mut std::collections::HashMap<String, String>);
+
+    impl tracing::field::Visit for RedirectWarningVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RedirectWarningCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() != tracing::Level::WARN
+                || event.metadata().target() != "sekishod::auth"
+            {
+                return;
+            }
+            let mut fields = std::collections::HashMap::new();
+            event.record(&mut RedirectWarningVisitor(&mut fields));
+            self.fields.lock().unwrap().push(fields);
+        }
+    }
+
+    #[tokio::test]
+    async fn safe_redirect_rejection_logs_only_the_input_length() {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let capture = RedirectWarningCapture::default();
+        let _guard = tracing_subscriber::registry()
+            .with(capture.clone())
+            .set_default();
+        let degraded = crate::store::Store::new_for_test_degraded("must not be read")
+            .await
+            .expect("degraded store");
+        for unsafe_url in ["/\\sentinel", "/ok\tbad", "/ok\rbad", "/ok\nbad"] {
+            assert_eq!(safe_redirect(unsafe_url, &degraded).await, "/");
+        }
+        assert_eq!(
+            safe_redirect("/ordinary/path", &degraded).await,
+            "/ordinary/path"
+        );
+
+        let store = crate::store::Store::new_for_test("sqlite::memory:", [0x55; 32], None)
+            .await
+            .unwrap();
+        let inputs = [
+            "not a sentinel URL",
+            "http://sentinel.example/path",
+            "https://user:sentinel@registered.example/path",
+            "https://unregistered-sentinel.example/path",
+        ];
+
+        for input in inputs {
+            assert_eq!(safe_redirect(input, &store).await, "/");
+        }
+
+        let events = capture.fields.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            inputs.len() + 4,
+            "captured events: {events:?}"
+        );
+        for event in events.iter() {
+            assert!(event.contains_key("url_len"), "missing length: {event:?}");
+            assert!(
+                !event.contains_key("url"),
+                "raw URL field leaked: {event:?}"
+            );
+            assert!(
+                !event.values().any(|value| value.contains("sentinel")),
+                "raw URL leaked through another field: {event:?}"
+            );
+        }
+    }
 
     async fn test_proxy(store: crate::store::Store) -> axum::Router {
         use std::sync::Arc;
