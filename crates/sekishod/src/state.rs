@@ -160,6 +160,9 @@ impl AppState {
             return Ok(client);
         }
         let idp = self.store.get_idp(idp_id).await?;
+        // Converted first: an IdP of the wrong type fails here, before its
+        // secret is decrypted or a client is built.
+        let idp_cfg = auth_idp::oidc::OidcIdpConfig::try_from(&idp)?;
         let auth_origin = self
             .identity_authority
             .auth_origin()
@@ -180,7 +183,6 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| crate::error::Error::Internal(format!("HTTP client error: {e}")))?;
-        let idp_cfg = auth_idp::oidc::OidcIdpConfig::from(&idp);
         let client_cfg = auth_idp::oidc::OidcClientConfig {
             client_id: oidc_config.client_id.clone(),
             redirect_url,
@@ -197,6 +199,9 @@ impl AppState {
             return Ok(client);
         }
         let idp = self.store.get_idp(idp_id).await?;
+        // Converted first: an IdP of the wrong type fails here, before a
+        // client is built.
+        let idp_cfg = auth_idp::saml::SamlIdpConfig::try_from(&idp)?;
         let auth_origin = self
             .identity_authority
             .auth_origin()
@@ -209,7 +214,6 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| crate::error::Error::Internal(format!("HTTP client error: {e}")))?;
-        let idp_cfg = auth_idp::saml::SamlIdpConfig::from(&idp);
         let sp_cfg = auth_idp::saml::SamlSpConfig {
             entity_id,
             acs_url,
