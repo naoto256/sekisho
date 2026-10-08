@@ -286,7 +286,7 @@ impl ApiClient {
     }
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
@@ -305,7 +305,7 @@ mod tests {
         body: String,
     }
 
-    fn test_client(base_url: &str) -> ApiClient {
+    pub(crate) fn test_client(base_url: &str) -> ApiClient {
         ApiClient {
             client: reqwest::Client::new(),
             base_url: format!("{}/.sekisho/api/v1", base_url.trim_end_matches('/')),

@@ -85,7 +85,7 @@ pub(super) async fn handle_edit_command(
         "unset" => cmd_unset(edit_ctx, parts),
         "show" => cmd_show_edit(client, edit_ctx).await,
         "commit" => cmd_commit(client, edit_ctx).await,
-        "edit-expr" => cmd_edit_expr(edit_ctx),
+        "edit-expr" => cmd_edit_expr(client, edit_ctx).await,
         "edit" => cmd_enter_nested(edit_ctx, parts),
         "up" => cmd_up(edit_ctx),
         "top" => cmd_top(edit_ctx),
@@ -235,22 +235,48 @@ impl Drop for ExprTempFile {
     }
 }
 
-/// `edit-expr` — open the current `expr` field in `$EDITOR` for free-form
-/// multi-line editing. Useful for policy expressions which may span many lines
-/// and contain comments. The edited text replaces the staged value; commit it
-/// with `commit` like any other field change.
-pub(super) fn cmd_edit_expr(edit_ctx: &mut Option<EditContext>) {
+/// `edit-expr` — open the `expr` field at the current scope in `$EDITOR` for
+/// free-form multi-line editing. Useful for policy expressions which may span
+/// many lines and contain comments. The edited text is staged as `expr` at
+/// that same scope, where the initial text was read from; commit it with
+/// `commit` like any other field change.
+pub(super) async fn cmd_edit_expr(client: &ApiClient, edit_ctx: &mut Option<EditContext>) {
     let Some(ctx) = edit_ctx.as_mut() else {
         eprintln!("not in edit mode");
         return;
     };
-    // Initial content: pending change > existing field > empty.
-    let initial = ctx
-        .changes
-        .get("expr")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    // Initial content: the pending `expr` at this scope if one is staged,
+    // otherwise the stored one, otherwise empty. A new resource has nothing
+    // stored, so nothing is fetched. For an existing one a failed fetch stops
+    // here: opening an empty buffer instead would invite staging text that
+    // replaces an expression the operator never saw.
+    let pending = Value::Object(ctx.changes.clone());
+    let initial = if let Some(value) =
+        narrow_to_path(&pending, &ctx.path).and_then(|scope| scope.get("expr"))
+    {
+        value.as_str().unwrap_or("").to_owned()
+    } else if ctx.is_new {
+        String::new()
+    } else {
+        let path = resource_api_path(&ctx.resource);
+        let url = if is_singleton(&ctx.resource) {
+            path.to_string()
+        } else {
+            format!("{path}/{}", ctx.id.as_deref().unwrap_or(""))
+        };
+        let base = match client.get(&url).await {
+            Ok(base) => base,
+            Err(error) => {
+                eprintln!("error fetching base: {error}");
+                return;
+            }
+        };
+        narrow_to_path(&base, &ctx.path)
+            .and_then(|scope| scope.get("expr"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
 
     let temporary = match ExprTempFile::create(&initial) {
         Ok(temporary) => temporary,
@@ -294,11 +320,12 @@ pub(super) fn cmd_edit_expr(edit_ctx: &mut Option<EditContext>) {
         eprintln!("(no changes)");
         return;
     }
-    ctx.changes.insert("expr".into(), Value::String(edited));
-    eprintln!(
-        "expr staged ({} bytes); validate on `commit`",
-        ctx.changes["expr"].as_str().unwrap_or("").len()
-    );
+    let edited_len = edited.len();
+    // Stage under the current scope, where the initial text came from.
+    let mut keys = ctx.path.clone();
+    keys.push("expr".into());
+    set_nested(&mut ctx.changes, &keys, Value::String(edited));
+    eprintln!("expr staged ({} bytes); validate on `commit`", edited_len);
 }
 
 async fn cmd_set(client: &ApiClient, edit_ctx: &mut Option<EditContext>, parts: &[&str]) {
@@ -737,7 +764,12 @@ mod tests {
             .insert("expr".into(), json!("pending-expression"));
         let before = context.changes.clone();
         let mut edit_ctx = Some(context);
-        cmd_edit_expr(&mut edit_ctx);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = crate::api::tests::test_client("http://127.0.0.1:1");
+        runtime.block_on(cmd_edit_expr(&client, &mut edit_ctx));
         if case == "existing" {
             assert_eq!(
                 std::fs::read_to_string(&legacy).unwrap(),
@@ -845,6 +877,147 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&collision).unwrap(), "protected");
         }
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardening_editor_initial_value_contract() {
+        const NAME: &str = "shell::edit::tests::hardening_editor_initial_value_contract";
+        const CHILD: &str = "SEKISHO_EDITOR_INITIAL_TEST_CHILD";
+        let Some(case) = std::env::var_os(CHILD) else {
+            for case in [
+                "pending",
+                "saved",
+                "new",
+                "nested",
+                "nested-pending",
+                "failure",
+                "unchanged",
+            ] {
+                let directory = std::env::temp_dir().join(format!(
+                    "sekisho-editor-initial-{}-{case}",
+                    std::process::id()
+                ));
+                std::fs::create_dir(&directory).unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", NAME, "--nocapture"])
+                    .env(CHILD, case)
+                    .env("TMPDIR", &directory)
+                    .output()
+                    .unwrap();
+                std::fs::remove_dir_all(&directory).unwrap();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    output.status.success()
+                        && stdout.contains(&format!("test {NAME} ... ok"))
+                        && stdout.contains("1 passed; 0 failed; 0 ignored"),
+                    "case {case}: {stdout}\n{stderr}"
+                );
+            }
+            return;
+        };
+        let case = case.to_str().unwrap();
+        let directory = std::env::temp_dir();
+        let observed = directory.join("initial");
+        let editor = directory.join("editor.sh");
+        let action = if case == "nested" {
+            "printf 'edited-nested' > \"$1\""
+        } else {
+            ":"
+        };
+        std::fs::write(
+            &editor,
+            format!("#!/bin/sh\ncp \"$1\" '{}'\n{action}\n", observed.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Only this test runs in the child; set the editor before starting runtime workers.
+        unsafe { std::env::set_var("EDITOR", &editor) };
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let captured = requests.clone();
+            let failed = case == "failure";
+            let server = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut bytes = Vec::new();
+                    while !bytes.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+                        bytes.push(byte[0]);
+                    }
+                    let request = String::from_utf8(bytes).unwrap();
+                    captured.lock().unwrap().push(request.lines().next().unwrap().to_owned());
+                    let body = if failed {
+                        r#"{"error":"fixture unavailable"}"#
+                    } else {
+                        r#"{"expr":"stored-expression","access":{"policy":{"expr":"stored-nested"}}}"#
+                    };
+                    let status = if failed { "500 Internal Server Error" } else { "200 OK" };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            });
+            let client = crate::api::tests::test_client(&format!("http://{address}"));
+            let mut context = if case.starts_with("nested") {
+                ctx_at("route", vec!["access", "policy"])
+            } else {
+                ctx_at("policy", vec![])
+            };
+            context.id = Some("fixture-id".into());
+            context.is_new = case == "new";
+            if case == "pending" {
+                context.changes.insert("expr".into(), json!("pending-expression"));
+            } else if case == "nested-pending" {
+                context.changes.insert("access".into(), json!({"policy":{"expr":"pending-nested"}}));
+            }
+            let before = context.changes.clone();
+            let mut edit_ctx = Some(context);
+            cmd_edit_expr(&client, &mut edit_ctx).await;
+            let context = edit_ctx.unwrap();
+            let requests = requests.lock().unwrap().clone();
+            if case == "failure" {
+                assert!(!observed.exists(), "GET failure must not start the editor");
+                assert_eq!(context.changes, before);
+            } else {
+                let expected = match case {
+                    "pending" => "pending-expression",
+                    "new" => "",
+                    "nested" => "stored-nested",
+                    "nested-pending" => "pending-nested",
+                    _ => "stored-expression",
+                };
+                assert_eq!(std::fs::read_to_string(&observed).unwrap(), expected);
+                if case == "nested" {
+                    assert_eq!(context.changes, json!({"access":{"policy":{"expr":"edited-nested"}}}).as_object().unwrap().clone());
+                } else {
+                    assert_eq!(context.changes, before, "unchanged editor must not stage a patch");
+                }
+            }
+            if matches!(case, "pending" | "nested-pending" | "new") {
+                assert!(requests.is_empty(), "pending/new must not fetch a base");
+            } else {
+                let resource = if case == "nested" { "routes" } else { "policies" };
+                assert_eq!(requests, [format!("GET /.sekisho/api/v1/{resource}/fixture-id HTTP/1.1")]);
+            }
+            assert!(requests.iter().all(|line| line.starts_with("GET ")), "API mutation must remain zero");
+            server.abort();
+            let _ = server.await;
+            assert!(std::fs::read_dir(&directory).unwrap().all(|entry| entry.unwrap().path().extension().and_then(|extension| extension.to_str()) != Some("expr")));
+        });
     }
 
     fn ctx_at(resource: &str, path: Vec<&str>) -> EditContext {
