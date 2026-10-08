@@ -99,7 +99,7 @@ pub struct LocalAuthConfig {
     pub socket: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuardConfig {
     #[serde(default)]
@@ -109,6 +109,20 @@ pub struct GuardConfig {
     /// accepted shape.
     #[serde(default)]
     pub basic_auth: Option<String>,
+}
+
+/// Hand-written because `basic_auth` is the guard credential — a password
+/// hash, or in the dev form the password itself. Only its presence is shown.
+impl std::fmt::Debug for GuardConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuardConfig")
+            .field("trust_sekisho_jwt", &self.trust_sekisho_jwt)
+            .field(
+                "basic_auth",
+                &self.basic_auth.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -263,6 +277,21 @@ mod tests {
         let s = format!("{cfg:?}");
         assert!(!s.contains("super_secret_value"), "leak: {s}");
         assert!(s.contains("redacted"), "should mark: {s}");
+    }
+
+    #[test]
+    fn hardening_guard_debug_redacts_basic_auth_in_parent_config() {
+        let guard = GuardConfig {
+            basic_auth: Some("operator:plain:guard-sentinel".into()),
+            ..Default::default()
+        };
+        let direct = format!("{guard:?}");
+        assert!(!direct.contains("guard-sentinel"));
+        assert!(!direct.contains("operator:plain"));
+        assert!(direct.contains("[REDACTED]"));
+        let mut config: WebuiConfig = serde_yaml::from_str(minimal()).unwrap();
+        config.guard = guard;
+        assert!(!format!("{config:?}").contains("guard-sentinel"));
     }
 
     #[test]

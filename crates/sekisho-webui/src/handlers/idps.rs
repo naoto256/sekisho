@@ -77,7 +77,7 @@ pub async fn edit(
     render_page(&s, u, "Edit IdP", view::edit_form(&item))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct IdpFormBody {
     pub name: String,
     #[serde(rename = "type")]
@@ -102,6 +102,27 @@ pub struct IdpFormBody {
     pub saml_email_attribute: String,
     #[serde(default)]
     pub saml_groups_attribute: String,
+}
+
+/// Hand-written because the form carries the OIDC client secret as typed.
+/// Every other field is printed as is.
+impl std::fmt::Debug for IdpFormBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdpFormBody")
+            .field("name", &self.name)
+            .field("ty", &self.ty)
+            .field("oidc_issuer_url", &self.oidc_issuer_url)
+            .field("oidc_client_id", &self.oidc_client_id)
+            .field("oidc_client_secret", &"[REDACTED]")
+            .field("oidc_scopes", &self.oidc_scopes)
+            .field("oidc_prompt", &self.oidc_prompt)
+            .field("saml_metadata_url", &self.saml_metadata_url)
+            .field("saml_slo_url", &self.saml_slo_url)
+            .field("saml_name_id_format", &self.saml_name_id_format)
+            .field("saml_email_attribute", &self.saml_email_attribute)
+            .field("saml_groups_attribute", &self.saml_groups_attribute)
+            .finish()
+    }
 }
 
 pub async fn create(
@@ -278,6 +299,17 @@ mod tests {
             saml_email_attribute: "mail".into(),
             saml_groups_attribute: String::new(),
         }
+    }
+
+    #[test]
+    fn hardening_idp_form_debug_redacts_client_secret() {
+        let mut form = base_form("oidc");
+        form.oidc_client_secret = "form-secret-sentinel".into();
+        let output = format!("{form:?}");
+        assert!(!output.contains("form-secret-sentinel"));
+        assert!(output.contains("oidc_client_secret"));
+        assert!(output.contains("[REDACTED]"));
+        assert!(output.contains("example"));
     }
 
     #[test]
