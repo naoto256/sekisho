@@ -163,6 +163,78 @@ pub(super) fn cmd_top(edit_ctx: &mut Option<EditContext>) {
     }
 }
 
+/// The scratch file `edit-expr` hands to the external editor. Removed on
+/// drop, including when writing the initial text fails.
+struct ExprTempFile {
+    path: std::path::PathBuf,
+}
+
+impl ExprTempFile {
+    /// Create it in the system temp directory with a name suffix drawn from
+    /// std's randomly keyed hasher. The suffix only has to make collisions
+    /// unlikely: what keeps this from writing through someone else's file or
+    /// symlink is the exclusive create in [`Self::create_at`], not the name.
+    fn create(initial: &str) -> std::io::Result<Self> {
+        use std::hash::BuildHasher;
+        Self::create_in(&std::env::temp_dir(), initial, || {
+            std::collections::hash_map::RandomState::new().hash_one(std::process::id())
+        })
+    }
+
+    /// [`Self::create`] with the directory and the suffix source injected for
+    /// tests. A name that already exists is retried with a new suffix, up to
+    /// 16 times; any other error is returned at once.
+    fn create_in(
+        directory: &std::path::Path,
+        initial: &str,
+        mut suffix: impl FnMut() -> u64,
+    ) -> std::io::Result<Self> {
+        for _ in 0..16 {
+            let path = directory.join(format!(
+                "sekisho-cli-{}-{:016x}.expr",
+                std::process::id(),
+                suffix()
+            ));
+            match Self::create_at(path, initial) {
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                result => return result,
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "temp file name collisions exhausted",
+        ))
+    }
+
+    /// `create_new` makes the open fail if something already exists at `path`
+    /// — a file or a symlink — instead of opening or following it. On Unix
+    /// the mode is given to the open itself, so the file does not exist with
+    /// wider permissions first. The guard is built before the write so that a
+    /// failed write still removes the file.
+    fn create_at(path: std::path::PathBuf, initial: &str) -> std::io::Result<Self> {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path)?;
+        let temporary = Self { path };
+        let written = file.write_all(initial.as_bytes());
+        drop(file);
+        written?;
+        Ok(temporary)
+    }
+}
+
+impl Drop for ExprTempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// `edit-expr` — open the current `expr` field in `$EDITOR` for free-form
 /// multi-line editing. Useful for policy expressions which may span many lines
 /// and contain comments. The edited text replaces the staged value; commit it
@@ -180,40 +252,43 @@ pub(super) fn cmd_edit_expr(edit_ctx: &mut Option<EditContext>) {
         .unwrap_or("")
         .to_string();
 
-    let pid = std::process::id();
-    let path = std::env::temp_dir().join(format!("sekisho-cli-{pid}.expr"));
-    if let Err(e) = std::fs::write(&path, &initial) {
-        eprintln!("error: failed to create temp file: {e}");
-        return;
-    }
+    let temporary = match ExprTempFile::create(&initial) {
+        Ok(temporary) => temporary,
+        Err(e) => {
+            eprintln!("error: failed to create temp file: {e}");
+            return;
+        }
+    };
+    // The editor is a separate program that is given the path, so the result
+    // is read back from that path rather than from a handle. Nothing here
+    // checks that it is still the file created above: on Unix that relies on
+    // the temp directory being sticky, so that other users cannot replace an
+    // entry they do not own.
+    let path = &temporary.path;
 
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| "vi".into());
-    let status = std::process::Command::new(&editor).arg(&path).status();
+    let status = std::process::Command::new(&editor).arg(path).status();
     match status {
         Ok(s) if !s.success() => {
             eprintln!("editor exited with {s}; discarding changes");
-            let _ = std::fs::remove_file(&path);
             return;
         }
         Err(e) => {
             eprintln!("error: failed to launch editor `{editor}`: {e}");
-            let _ = std::fs::remove_file(&path);
             return;
         }
         _ => {}
     }
 
-    let edited = match std::fs::read_to_string(&path) {
+    let edited = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: failed to read edited file: {e}");
-            let _ = std::fs::remove_file(&path);
             return;
         }
     };
-    let _ = std::fs::remove_file(&path);
 
     if edited == initial {
         eprintln!("(no changes)");
@@ -580,6 +655,197 @@ pub(super) async fn cmd_create_config(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(unix)]
+    #[test]
+    fn hardening_editor_file_contract() {
+        const NAME: &str = "shell::edit::tests::hardening_editor_file_contract";
+        const CHILD: &str = "SEKISHO_EDITOR_FILE_TEST_CHILD";
+        let Some(case) = std::env::var_os(CHILD) else {
+            for case in ["existing", "symlink", "mode", "failure", "launch", "read"] {
+                let directory = std::env::temp_dir()
+                    .join(format!("sekisho-editor-test-{}-{case}", std::process::id()));
+                std::fs::create_dir(&directory).unwrap();
+                let output = std::process::Command::new("sh")
+                    .args(["-c", "umask 000; exec \"$@\"", "sh"])
+                    .arg(std::env::current_exe().unwrap())
+                    .args(["--exact", NAME, "--nocapture"])
+                    .env(CHILD, case)
+                    .env("TMPDIR", &directory)
+                    .output()
+                    .unwrap();
+                std::fs::remove_dir_all(&directory).unwrap();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    output.status.success()
+                        && stdout.contains(&format!("test {NAME} ... ok"))
+                        && stdout.contains("1 passed; 0 failed; 0 ignored"),
+                    "case {case}: {stdout}\n{stderr}"
+                );
+            }
+            return;
+        };
+        let case = case.to_str().unwrap();
+        let directory = std::env::temp_dir();
+        let legacy = directory.join(format!("sekisho-cli-{}.expr", std::process::id()));
+        let target = directory.join("protected-target");
+        if case == "existing" {
+            std::fs::write(&legacy, "do-not-overwrite").unwrap();
+        } else if case == "symlink" {
+            std::fs::write(&target, "do-not-follow").unwrap();
+            std::os::unix::fs::symlink(&target, &legacy).unwrap();
+        }
+        let observed = directory.join("observed-path");
+        let mode = directory.join("observed-mode");
+        let editor = directory.join("editor.sh");
+        let stat = if cfg!(target_os = "macos") {
+            "stat -f %Lp"
+        } else {
+            "stat -c %a"
+        };
+        let action = match case {
+            "failure" => "exit 1",
+            "read" => "printf '\\377' > \"$1\"",
+            _ => "printf 'edited-expression' > \"$1\"",
+        };
+        std::fs::write(
+            &editor,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n{stat} \"$1\" > '{}'\n{action}\n",
+                observed.display(),
+                mode.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // This test runs alone in its child process before starting any worker threads.
+        unsafe {
+            std::env::set_var(
+                "EDITOR",
+                if case == "launch" {
+                    directory.join("missing-editor")
+                } else {
+                    editor
+                },
+            );
+        }
+        let mut context = ctx_at("policy", vec![]);
+        context
+            .changes
+            .insert("expr".into(), json!("pending-expression"));
+        let before = context.changes.clone();
+        let mut edit_ctx = Some(context);
+        cmd_edit_expr(&mut edit_ctx);
+        if case == "existing" {
+            assert_eq!(
+                std::fs::read_to_string(&legacy).unwrap(),
+                "do-not-overwrite"
+            );
+        } else if case == "symlink" {
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "do-not-follow");
+            assert!(
+                std::fs::symlink_metadata(&legacy)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        } else if case == "mode" {
+            assert_eq!(std::fs::read_to_string(&mode).unwrap().trim(), "600");
+        }
+        if case == "launch" {
+            assert!(!legacy.exists());
+        } else {
+            let created = std::fs::read_to_string(&observed).unwrap();
+            assert!(
+                !std::path::Path::new(&created).exists(),
+                "temp residue: {created}"
+            );
+        }
+        if matches!(case, "failure" | "launch" | "read") {
+            assert_eq!(edit_ctx.unwrap().changes, before);
+        } else {
+            assert_eq!(edit_ctx.unwrap().changes["expr"], "edited-expression");
+        }
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            assert!(
+                path.extension().and_then(|value| value.to_str()) != Some("expr")
+                    || (matches!(case, "existing" | "symlink") && path == legacy),
+                "unexpected temp residue: {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn hardening_editor_file_collision_retry_and_drop() {
+        let directory = std::env::temp_dir().join(format!(
+            "sekisho-editor-collision-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let collision = directory.join(format!(
+            "sekisho-cli-{}-0000000000000000.expr",
+            std::process::id()
+        ));
+        std::fs::write(&collision, "protected").unwrap();
+        let mut calls = 0;
+        let file = ExprTempFile::create_in(&directory, "initial", || {
+            calls += 1;
+            if calls == 1 { 0 } else { 1 }
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(std::fs::read_to_string(&collision).unwrap(), "protected");
+        assert_eq!(std::fs::read_to_string(&file.path).unwrap(), "initial");
+        let created = file.path.clone();
+        assert!(
+            std::panic::catch_unwind(move || {
+                let _file = file;
+                panic!("exercise temp guard unwind");
+            })
+            .is_err()
+        );
+        assert!(!created.exists());
+        let mut calls = 0;
+        let error = ExprTempFile::create_in(&directory, "do not write", || {
+            calls += 1;
+            0
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(calls, 16);
+        let mut calls = 0;
+        assert!(
+            ExprTempFile::create_in(&directory.join("missing"), "initial", || {
+                calls += 1;
+                0
+            })
+            .is_err()
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(std::fs::read_to_string(&collision).unwrap(), "protected");
+        #[cfg(unix)]
+        {
+            let link = directory.join("collision-symlink.expr");
+            std::os::unix::fs::symlink(&collision, &link).unwrap();
+            let error = ExprTempFile::create_at(link.clone(), "do not follow")
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+            assert!(
+                std::fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(std::fs::read_to_string(&collision).unwrap(), "protected");
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     fn ctx_at(resource: &str, path: Vec<&str>) -> EditContext {
         EditContext {
