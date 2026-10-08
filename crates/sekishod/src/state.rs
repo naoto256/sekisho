@@ -209,7 +209,11 @@ impl AppState {
         let entity_id = auth_origin.as_str().to_string();
         let acs_url = auth_origin.url("/.sekisho/saml/acs");
         let sp_slo_url = auth_origin.url("/.sekisho/saml/slo");
+        // Redirects are not followed, as for the OIDC client above. The SAML
+        // client fetches the IdP metadata with this, so a redirect cannot move
+        // that fetch away from the configured `metadata_url`.
         let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -222,5 +226,148 @@ impl AppState {
         };
         let client = Arc::new(SamlClient::new(&http, &idp_cfg, &sp_cfg).await?);
         Ok(cache_insert_or_existing(&self.saml_clients, idp_id, client).await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn hardening_saml_metadata_does_not_follow_redirects() {
+        use axum::{Router, response::IntoResponse, routing::get};
+        use base64::Engine;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["idp.example".into()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let der = base64::engine::general_purpose::STANDARD.encode(cert.der());
+        let metadata = format!(
+            r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example"><IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><KeyDescriptor><KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><X509Data><X509Certificate>{der}</X509Certificate></X509Data></KeyInfo></KeyDescriptor><SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example/login"/></IDPSSODescriptor></EntityDescriptor>"#
+        );
+        let direct_hits = Arc::new(AtomicUsize::new(0));
+        let redirected_hits = Arc::new(AtomicUsize::new(0));
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        let count = redirected_hits.clone();
+        let target_app = Router::new().fallback(get(move || {
+            let count = count.clone();
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                "unexpected follow"
+            }
+        }));
+        let target_task = tokio::spawn(async move {
+            axum::serve(target, target_app).await.unwrap();
+        });
+        let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_addr = origin.local_addr().unwrap();
+        let count = direct_hits.clone();
+        let document = metadata.clone();
+        let app = Router::new()
+            .route(
+                "/direct",
+                get(move || {
+                    let count = count.clone();
+                    let document = document.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        document
+                    }
+                }),
+            )
+            .route(
+                "/same",
+                get(|| async {
+                    (axum::http::StatusCode::FOUND, [("location", "/direct")], "").into_response()
+                }),
+            )
+            .route(
+                "/cross",
+                get(move || async move {
+                    (
+                        axum::http::StatusCode::FOUND,
+                        [("location", format!("http://{target_addr}/target"))],
+                        "",
+                    )
+                        .into_response()
+                }),
+            )
+            .route(
+                "/http",
+                get(move || async move {
+                    (
+                        axum::http::StatusCode::TEMPORARY_REDIRECT,
+                        [(
+                            "location",
+                            format!("http://localhost:{}/target", target_addr.port()),
+                        )],
+                        "",
+                    )
+                        .into_response()
+                }),
+            );
+        let origin_task = tokio::spawn(async move {
+            axum::serve(origin, app).await.unwrap();
+        });
+        let store = Store::new_for_test("sqlite::memory:", [0x66; 32], None)
+            .await
+            .unwrap();
+        let state = AppState {
+            client: Client::builder(hyper_util::rt::TokioExecutor::new()).build_http(),
+            route_generation: crate::route_generation::RouteGeneration::new_ready_empty_for_test(
+                store.clone(),
+            ),
+            auth_state_store: Arc::new(AuthStateStore::new(store.clone())),
+            session_manager: Arc::new(SessionManager::new(store.clone(), 8)),
+            cookie_manager: Arc::new(CookieManager::new(&[1; 64])),
+            acme_manager: Arc::new(AcmeManager::new(
+                store.clone(),
+                Arc::new(Http01Provider::new(store.clone())),
+                "https://acme.invalid/directory",
+                None,
+            )),
+            handoff_cipher: HandoffCipher::new(crate::crypto::MasterKey::from_test_bytes([2; 32])),
+            jwt_signing_key: crate::crypto::IdentityKeyRingSnapshot::from_test_bytes([3; 32]),
+            identity_authority: Arc::new(crate::identity::IdentityAuthority::for_test(
+                "auth.example",
+            )),
+            tls_enabled: true,
+            session_cookie_name: "sekisho_session".into(),
+            pipeline: Arc::new(crate::proxy::transform::default_pipeline()),
+            oidc_clients: Arc::new(RwLock::new(Default::default())),
+            saml_clients: Arc::new(RwLock::new(Default::default())),
+            idp_version_seen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            store: store.clone(),
+        };
+        for path in ["direct", "same", "cross", "http"] {
+            let idp: crate::models::idp::IdentityProvider =
+                serde_json::from_value(serde_json::json!({
+                    "id": Uuid::new_v4(), "name": path, "type": "saml",
+                    "saml_config": {"metadata_url": format!("http://{origin_addr}/{path}")}
+                }))
+                .unwrap();
+            store.create_idp(&idp).await.unwrap();
+            let result = state.get_saml_client(idp.id).await;
+            if path == "direct" {
+                assert!(result.is_ok());
+            }
+            assert_eq!(
+                direct_hits.load(Ordering::SeqCst),
+                1,
+                "same-origin redirect was followed"
+            );
+            assert_eq!(
+                redirected_hits.load(Ordering::SeqCst),
+                0,
+                "redirect destination received a request"
+            );
+        }
+        origin_task.abort();
+        target_task.abort();
+        let _ = origin_task.await;
+        let _ = target_task.await;
     }
 }
