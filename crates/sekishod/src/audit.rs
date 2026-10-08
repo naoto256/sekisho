@@ -26,7 +26,8 @@
 //! UUID v7 — time-ordered IDs make ad-hoc journalctl scans pleasant
 //! without giving up uniqueness. The id is then echoed on the
 //! response, made available to handlers as a request extension, and
-//! carried on an `http.request` span that wraps the rest of the request.
+//! carried on an `http.request` span around the layers and the handler
+//! that run inside the middleware.
 //!
 //! ## Event taxonomy
 //!
@@ -332,9 +333,12 @@ pub const REQUEST_ID_HEADER: &str = "x-request-id";
 /// is unambiguous (axum keys extensions by type).
 ///
 /// Today no handler pulls this out. Log lines get the id from the
-/// `http.request` span the middleware opens: an event emitted while
-/// the request is being handled is inside that span, and the JSON log
-/// format prints the span list, so the line carries it under `spans`.
+/// `http.request` span the middleware opens around `next.run`: the JSON
+/// log format prints the span list, so an event emitted inside that span
+/// carries the id under `spans`. The span covers the layers and the
+/// handler that run within `next.run`; lines written outside it, such as
+/// those for accepting the connection or the TLS handshake, do not carry
+/// the id.
 /// The accessor stays exposed for the case where a handler wants to
 /// surface the id in an HTTP response body.
 #[derive(Debug, Clone)]
