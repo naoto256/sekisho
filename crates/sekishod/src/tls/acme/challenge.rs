@@ -37,8 +37,9 @@ impl Http01Provider {
                 // "token unknown" — either way we can't serve the
                 // response. Log so the operator can see it in the HTTP
                 // responder's context rather than it surfacing as a
-                // bare 404 to Let's Encrypt.
-                tracing::warn!(token = %token, error = %e, "ACME challenge lookup failed");
+                // bare 404 to Let's Encrypt. The token appears by length
+                // only; the error is logged as the store reported it.
+                tracing::warn!(token_len = token.len(), error = %e, "ACME challenge lookup failed");
                 None
             }
         }
@@ -77,6 +78,85 @@ mod tests {
     use crate::store::Store;
 
     const TEST_MASTER_KEY: [u8; 32] = [0u8; 32];
+
+    #[test]
+    fn hardening_acme_lookup_failure_logs_only_token_length() {
+        const NAME: &str =
+            "tls::acme::challenge::tests::hardening_acme_lookup_failure_logs_only_token_length";
+        const CHILD: &str = "SEKISHO_ACME_LOOKUP_LOG_TEST_CHILD";
+        // Isolate the subscriber from process-global tracing callsite interest caches.
+        if std::env::var(CHILD).as_deref() != Ok(NAME) {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env(CHILD, NAME)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success()
+                    && stdout.contains(&format!("test {NAME} ... ok"))
+                    && stdout.contains("1 passed; 0 failed; 0 ignored"),
+                "{stdout}\n{stderr}"
+            );
+            return;
+        }
+
+        #[derive(Clone, Default)]
+        struct Buffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        use tracing_subscriber::util::SubscriberInitExt;
+        let buffer = Buffer::default();
+        let writer = buffer.clone();
+        let _guard = tracing_subscriber::fmt()
+            .json()
+            .with_writer(move || writer.clone())
+            .finish()
+            .set_default();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                const TOKEN: &str = "lookup-private-token-sentinel";
+                let store = Store::new_for_test("sqlite::memory:", TEST_MASTER_KEY, None)
+                    .await
+                    .unwrap();
+                // Closing only this fixture's pools deterministically exercises the DB error path.
+                store.close().await;
+                let error = store.get_acme_challenge(TOKEN).await.unwrap_err();
+                let provider = Http01Provider::new(store);
+                assert!(provider.get_response(TOKEN).await.is_none());
+
+                let logs = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+                assert!(!logs.contains(TOKEN), "token leaked: {logs}");
+                assert!(
+                    !logs.contains("lookup-private-token"),
+                    "token prefix leaked: {logs}"
+                );
+                let events: Vec<serde_json::Value> = logs
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .filter(|event: &serde_json::Value| {
+                        event["fields"]["message"] == "ACME challenge lookup failed"
+                    })
+                    .collect();
+                assert_eq!(events.len(), 1, "{logs}");
+                let event = &events[0];
+                assert_eq!(event["level"], "WARN");
+                assert_eq!(event["fields"]["token_len"], TOKEN.len());
+                assert_eq!(event["fields"]["error"], error.to_string());
+                assert!(event["fields"].get("token").is_none());
+            });
+    }
 
     #[tokio::test]
     async fn http01_provider_stores_via_service_db() {
