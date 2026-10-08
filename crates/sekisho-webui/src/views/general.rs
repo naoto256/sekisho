@@ -1,7 +1,7 @@
 //! Consolidated General page. Layout, top to bottom:
 //!
-//! 1. **General** — daemon-wide knobs (auth domain, sessions, ACME,
-//!    logging). The everyday surface, safe to touch.
+//! 1. **General** — daemon-wide knobs (auth domain, sessions, ACME).
+//!    The everyday surface, safe to touch.
 //! 2. **Instance Config** — per-node listen addresses and their
 //!    paired `accept_from` source-IP ACLs. Restart-required, but
 //!    the blast radius is local to this node only — picking the
@@ -138,10 +138,6 @@ fn general_section(data: &Value, idps: &[Value]) -> Markup {
                     input type="number" min="1" max="168" name="acme_renewal_scan_interval_hours" value=(s("acme_renewal_scan_interval_hours")) placeholder="12";
                     small class="muted" { "How often due certificates are admitted to the queue. A restart is required after changing this value." }
                 }
-            }
-            fieldset {
-                legend { "Logging" }
-                label { "Log level" input type="text" name="log_level" value=(s("log_level")) placeholder="info"; }
             }
             fieldset {
                 legend { "WebSocket capacity" }
@@ -625,6 +621,36 @@ mod tests {
             !html.contains("/general/backup") && !html.to_ascii_lowercase().contains("backup"),
             "removed backup controls must not render: {html}"
         );
+    }
+
+    #[test]
+    fn hardening_removed_log_level_is_not_rendered_from_legacy_config() {
+        for config in [json!({"log_level": "debug"}), json!({})] {
+            let html =
+                page(&config, &[], &json!({}), None, false, &DekState::default()).into_string();
+            assert!(!html.contains("name=\"log_level\""));
+            assert!(!html.contains("Log level"));
+            assert!(html.split("<legend").skip(1).all(|element| {
+                let (_, body) = element.split_once('>').expect("legend opening tag");
+                let (body, _) = body.split_once("</legend>").expect("legend closing tag");
+                let mut in_tag = false;
+                let text: String = body
+                    .chars()
+                    .filter(|&c| match c {
+                        '<' => {
+                            in_tag = true;
+                            false
+                        }
+                        '>' if in_tag => {
+                            in_tag = false;
+                            false
+                        }
+                        _ => !in_tag,
+                    })
+                    .collect();
+                text.trim() != "Logging"
+            }));
+        }
     }
 
     #[test]

@@ -52,7 +52,6 @@ pub async fn update(
         })?;
     }
     validation::validate_config_update(
-        body.log_level.as_deref(),
         body.session_lifetime_hours,
         body.websocket_concurrency_limit,
         body.acme_queue_capacity,
@@ -103,6 +102,40 @@ pub async fn update(
 mod tests {
     use super::*;
     use http_body_util::BodyExt;
+
+    #[tokio::test]
+    async fn hardening_removed_log_level_patch_is_ignored_and_get_omits_it() {
+        let store = crate::store::Store::new_for_test("sqlite::memory:", [0x75; 32], None)
+            .await
+            .unwrap();
+        for value in [
+            serde_json::json!("debug"),
+            serde_json::json!("banana"),
+            serde_json::Value::Null,
+            serde_json::json!({"ignored": true}),
+        ] {
+            let patch: UpdateGlobalConfig =
+                serde_json::from_value(serde_json::json!({"log_level": value})).unwrap();
+            let response = update(
+                State(store.clone()),
+                Extension(Actor::system()),
+                SanitizedJson(patch),
+            )
+            .await
+            .unwrap()
+            .into_response();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(body.get("log_level").is_none());
+            assert!(body.get("_restart_required").is_none());
+            assert_eq!(body["session_lifetime_hours"], 8);
+        }
+        let response = get(State(store)).await.unwrap().into_response();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body.get("log_level").is_none());
+    }
 
     #[tokio::test]
     async fn hardening_nullable_config_api_clears_sqlite_and_marks_auth_restart() {

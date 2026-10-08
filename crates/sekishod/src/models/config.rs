@@ -89,6 +89,10 @@ pub struct GlobalConfig {
     // in the cluster-wide service DB forced every node to share an
     // address. They're now read/written through `InstanceStore` and
     // the `/instance` management endpoint.
+    //
+    // There is no log level here either. It is a per-process startup
+    // setting (`--log-level` / `SEKISHO_LOG_LEVEL`, or `RUST_LOG`), not
+    // part of the shared config row.
     pub auth_domain: Option<String>,
     pub cookie_name: String,
     pub session_lifetime_hours: u32,
@@ -127,7 +131,6 @@ pub struct GlobalConfig {
     /// Loaded at startup; changing it requires a restart.
     #[serde(default = "default_acme_renewal_scan_interval_hours")]
     pub acme_renewal_scan_interval_hours: u32,
-    pub log_level: String,
 }
 
 /// Sized for the tunnel-heavy case an IAP actually sees (terminal and
@@ -172,7 +175,6 @@ impl Default for GlobalConfig {
             acme_queue_capacity: default_acme_queue_capacity(),
             acme_issuance_concurrency_limit: default_acme_issuance_concurrency_limit(),
             acme_renewal_scan_interval_hours: default_acme_renewal_scan_interval_hours(),
-            log_level: "info".to_string(),
         }
     }
 }
@@ -228,13 +230,34 @@ pub struct UpdateGlobalConfig {
     pub acme_issuance_concurrency_limit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acme_renewal_scan_interval_hours: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub log_level: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardening_removed_log_level_is_ignored_in_legacy_rows_and_patches() {
+        let mut legacy = serde_json::to_value(GlobalConfig::default()).unwrap();
+        legacy["log_level"] = serde_json::json!("debug");
+        let config: GlobalConfig = serde_json::from_value(legacy).unwrap();
+        assert!(
+            serde_json::to_value(config)
+                .unwrap()
+                .get("log_level")
+                .is_none()
+        );
+        for value in [
+            serde_json::json!("debug"),
+            serde_json::json!("banana"),
+            serde_json::Value::Null,
+            serde_json::json!({"ignored": true}),
+        ] {
+            let patch: UpdateGlobalConfig =
+                serde_json::from_value(serde_json::json!({"log_level": value})).unwrap();
+            assert_eq!(serde_json::to_value(patch).unwrap(), serde_json::json!({}));
+        }
+    }
 
     #[test]
     fn hardening_nullable_config_patch_preserves_missing_null_and_value() {

@@ -1142,18 +1142,15 @@ mod tests {
                 .await
                 .unwrap_or_else(|e| panic!("[{label}]: {e}"));
             assert_eq!(config.session_lifetime_hours, 8, "[{label}]");
-            assert_eq!(config.log_level, "info", "[{label}]");
 
             let updated = store
                 .update_config(serde_json::json!({
                     "auth_domain": "auth.example.com",
-                    "session_lifetime_hours": 24,
-                    "log_level": "debug"
+                    "session_lifetime_hours": 24
                 }))
                 .await
                 .unwrap_or_else(|e| panic!("[{label}]: {e}"));
             assert_eq!(updated.session_lifetime_hours, 24, "[{label}]");
-            assert_eq!(updated.log_level, "debug", "[{label}]");
             assert_eq!(
                 updated.auth_domain.as_deref(),
                 Some("auth.example.com"),
@@ -1169,6 +1166,74 @@ mod tests {
     }
 
     // ═══════════════════════ API Keys ═══════════════════════
+
+    #[tokio::test]
+    async fn hardening_removed_log_level_legacy_storage_reads_and_rewrites() {
+        for (label, store, control) in stores_with_relational_control().await {
+            eprintln!("REMOVED_LOG_LEVEL_{label}_ACQUIRED");
+            let mut legacy =
+                serde_json::to_value(crate::models::config::GlobalConfig::default()).unwrap();
+            legacy["log_level"] = serde_json::json!("debug");
+            let original = serde_json::to_string(&legacy).unwrap();
+            match &control {
+                RelationalTestControl::Sqlite(pool) => {
+                    sqlx::query("INSERT INTO global_config (id, data) VALUES (1, ?)")
+                        .bind(&original)
+                        .execute(pool)
+                        .await
+                        .unwrap();
+                }
+                RelationalTestControl::Postgres(pool) => {
+                    sqlx::query("INSERT INTO global_config (id, data) VALUES (1, $1)")
+                        .bind(&original)
+                        .execute(pool)
+                        .await
+                        .unwrap();
+                }
+            }
+            let read_raw = || async {
+                match &control {
+                    RelationalTestControl::Sqlite(pool) => sqlx::query_scalar::<_, String>(
+                        "SELECT data FROM global_config WHERE id = 1",
+                    )
+                    .fetch_one(pool)
+                    .await
+                    .unwrap(),
+                    RelationalTestControl::Postgres(pool) => sqlx::query_scalar::<_, String>(
+                        "SELECT data FROM global_config WHERE id = 1",
+                    )
+                    .fetch_one(pool)
+                    .await
+                    .unwrap(),
+                }
+            };
+            let read = store.get_config().await.unwrap();
+            assert_eq!(read.session_lifetime_hours, 8, "[{label}]");
+            assert!(
+                serde_json::to_value(read)
+                    .unwrap()
+                    .get("log_level")
+                    .is_none(),
+                "[{label}]"
+            );
+            assert_eq!(
+                read_raw().await,
+                original,
+                "reads must not migrate the row [{label}]"
+            );
+            let updated = store
+                .update_config(serde_json::json!({"session_lifetime_hours": 24}))
+                .await
+                .unwrap();
+            assert_eq!(updated.session_lifetime_hours, 24, "[{label}]");
+            let persisted: serde_json::Value = serde_json::from_str(&read_raw().await).unwrap();
+            assert!(persisted.get("log_level").is_none(), "[{label}]");
+            assert_eq!(persisted["session_lifetime_hours"], 24);
+            assert_eq!(store.get_config().await.unwrap().session_lifetime_hours, 24);
+            eprintln!("REMOVED_LOG_LEVEL_{label}_REWRITE_PASS");
+            store.close().await;
+        }
+    }
 
     #[tokio::test]
     async fn api_key_create_verify_delete() {
