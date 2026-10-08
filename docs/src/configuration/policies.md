@@ -378,13 +378,16 @@ For one-liners the regular `set` works:
 sekisho@iap edit policy/exec> set expr claim.groups in ["c-suite", "vp"]
 ```
 
-Type it exactly as written. `set` is not a shell: it takes everything
-after the field name verbatim, so nothing is unquoted or unescaped on
-the way in. The double quotes around `"c-suite"` are part of the DSL —
-string literals need them — and they must appear literally. Do not
-escape them, and do not wrap the whole expression in another pair of
-quotes; either way the extra characters are stored as part of the
-expression and it stops parsing.
+Type the expression as written: the double quotes around `"c-suite"`
+are the DSL's own string syntax. For scalar values, `set` preserves
+consecutive spaces inside the value. A value enclosed entirely in a
+matching pair of single or double quotes is always a string, with only
+that outer pair removed; spaces inside the pair are preserved too.
+There is no escape processing, so do not backslash-escape the DSL's
+quotes. An opening quote without a matching closing quote is a usage
+error. Unquoted values retain the usual `true` / `false` / `null` /
+integer conversion; an expression starting with `claim.` remains a
+string, including any quotes within it.
 
 `edit-expr` opens the pending value in an editor instead, which is
 easier for anything spanning more than a line.
