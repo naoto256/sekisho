@@ -508,7 +508,91 @@ async fn actual_binary_enforces_guard_csrf_and_security_headers() {
     assert!(upstream_lines.iter().any(|line| {
         line.starts_with("GET /.sekisho/api/v1/routes?limit=100&offset=1 HTTP/1.1")
     }));
+    let canonical_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    for id in [
+        "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+        "aaaaaaaabbbb4ccc8dddeeeeeeeeeeee",
+    ] {
+        for (resource, api_resource) in [
+            ("idps", "idps"),
+            ("routes", "routes"),
+            ("certificates", "certs"),
+        ] {
+            let before = upstream.request_count();
+            let response = client
+                .delete(format!("{base_url}/{resource}/{id}"))
+                .header(reqwest::header::AUTHORIZATION, VALID_BASIC)
+                .header(
+                    reqwest::header::COOKIE,
+                    format!("_sekisho_csrf={csrf_token}"),
+                )
+                .header("x-csrf-token", &csrf_token)
+                .send()
+                .await
+                .expect("send valid UUID path request");
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            assert_eq!(upstream.request_count(), before + 1);
+            assert_eq!(
+                upstream.request_lines().last().unwrap(),
+                &format!("DELETE /.sekisho/api/v1/{api_resource}/{canonical_id} HTTP/1.1")
+            );
+        }
+    }
     let upstream_before_rejections = upstream.request_count();
+
+    for id in [
+        "not-a-uuid",
+        "%2F..%2Fconfig",
+        "bad%3Fquery%3Dvalue",
+        "bad%23fragment",
+    ] {
+        for (method, resource, suffix, form) in [
+            (reqwest::Method::GET, "idps", "", ""),
+            (reqwest::Method::POST, "idps", "", "name=test&type=oidc"),
+            (reqwest::Method::DELETE, "idps", "", ""),
+            (reqwest::Method::GET, "routes", "", ""),
+            (
+                reqwest::Method::POST,
+                "routes",
+                "",
+                "name=test&from=app.example&to=http%3A%2F%2Fupstream.example",
+            ),
+            (reqwest::Method::DELETE, "routes", "", ""),
+            (reqwest::Method::POST, "routes", "/enable", ""),
+            (reqwest::Method::POST, "routes", "/disable", ""),
+            (reqwest::Method::DELETE, "certificates", "", ""),
+        ] {
+            let response = client
+                .request(
+                    method.clone(),
+                    format!("{base_url}/{resource}/{id}{suffix}"),
+                )
+                .header(reqwest::header::AUTHORIZATION, VALID_BASIC)
+                .header(
+                    reqwest::header::COOKIE,
+                    format!("_sekisho_csrf={csrf_token}"),
+                )
+                .header("x-csrf-token", &csrf_token)
+                .header(
+                    reqwest::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .body(form)
+                .send()
+                .await
+                .expect("request invalid resource id");
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::BAD_REQUEST,
+                "{method} {resource}/{id}{suffix}"
+            );
+            assert_eq!(
+                upstream.request_count(),
+                upstream_before_rejections,
+                "invalid id reached the management API"
+            );
+        }
+    }
 
     let response = client
         .post(format!("{base_url}/setup"))

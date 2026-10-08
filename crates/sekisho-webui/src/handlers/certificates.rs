@@ -4,6 +4,11 @@
 //!   - `DELETE /certs/{id}`
 //!
 //! sekisho-webui uses all three; issuance is polled through the durable queue.
+//!
+//! `delete` extracts its `{id}` as `Path<Uuid>`. The id is interpolated into
+//! the management API path, so it must not be able to carry a `/`, `?` or `#`
+//! of its own: anything that is not a UUID is answered with 400 before the
+//! handler runs, and what goes upstream is the canonical hyphenated form.
 
 use axum::{
     Extension, Form,
@@ -14,6 +19,7 @@ use maud::html;
 use sekisho_api_protocol::api_paths;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use super::common::{err_page, render_page};
 use crate::AppState;
@@ -145,7 +151,7 @@ pub async fn upload(
 pub async fn delete(
     State(s): State<AppState>,
     user: Option<Extension<AuthenticatedUser>>,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
 ) -> Response {
     match s.client.delete(&format!("/certs/{id}")).await {
         Ok(()) => Response::new(axum::body::Body::empty()),
