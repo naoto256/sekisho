@@ -21,7 +21,6 @@ listen addresses — live elsewhere (see
 | `acme_queue_capacity`     | u32              | `1000`                                               | Cluster-wide pending + in-progress rows. Live; lowering below active work is drain-only. |
 | `acme_issuance_concurrency_limit` | u32       | `5`                                                  | Queue-worker slots (`1..=5`). Restart required.    |
 | `acme_renewal_scan_interval_hours` | u32       | `12`                                                 | Renewal admission scan (`1..=168`). Restart required. |
-| `log_level`               | string           | `info`                                               | `trace`, `debug`, `info`, `warn`, `error`.         |
 
 ## What is not here
 

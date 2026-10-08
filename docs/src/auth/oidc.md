@@ -133,5 +133,6 @@ no SLO endpoint, or when the stored `SessionIndex` is absent. See
 - **`code expired`** — clock skew or a slow callback. Check NTP on the
   Sekisho host.
 
-For protocol-level debugging, set `log_level` to `debug` and watch the
-journal during the failing flow.
+For protocol-level debugging, set `--log-level debug`,
+`SEKISHO_LOG_LEVEL=debug` or `RUST_LOG=debug` and restart the daemon.
+Then watch the journal during the failing flow.

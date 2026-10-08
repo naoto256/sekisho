@@ -294,22 +294,12 @@ pub(crate) fn validate_saml_config_fields(metadata_url: &str) -> Result<(), Erro
 /// operationally absurd or would starve a shared resource" rather than
 /// anything the types could express.
 pub fn validate_config_update(
-    log_level: Option<&str>,
     session_lifetime_hours: Option<u32>,
     websocket_concurrency_limit: Option<u32>,
     acme_queue_capacity: Option<u32>,
     acme_issuance_concurrency_limit: Option<u32>,
     acme_renewal_scan_interval_hours: Option<u32>,
 ) -> Result<(), Error> {
-    if let Some(level) = log_level {
-        const VALID_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
-        if !VALID_LEVELS.contains(&level) {
-            return Err(Error::BadRequest(format!(
-                "log_level must be one of: {}",
-                VALID_LEVELS.join(", ")
-            )));
-        }
-    }
     if let Some(hours) = session_lifetime_hours
         && (hours == 0 || hours > 720)
     {
@@ -351,7 +341,6 @@ pub fn validate_config_update(
 /// rather than behave strangely later.
 pub fn validate_global_config(config: &crate::models::config::GlobalConfig) -> Result<(), Error> {
     validate_config_update(
-        Some(&config.log_level),
         Some(config.session_lifetime_hours),
         Some(config.websocket_concurrency_limit),
         Some(config.acme_queue_capacity),
@@ -1061,25 +1050,18 @@ mod tests {
     }
 
     #[test]
-    fn config_update_invalid_log_level() {
-        assert!(validate_config_update(Some("banana"), None, None, None, None, None).is_err());
-    }
-
-    #[test]
     fn config_update_session_lifetime_zero() {
-        assert!(validate_config_update(None, Some(0), None, None, None, None).is_err());
+        assert!(validate_config_update(Some(0), None, None, None, None).is_err());
     }
 
     #[test]
     fn config_update_valid() {
-        assert!(
-            validate_config_update(Some("debug"), Some(24), Some(100), None, None, None).is_ok()
-        );
+        assert!(validate_config_update(Some(24), Some(100), None, None, None).is_ok());
     }
 
     #[test]
     fn config_update_rejects_zero_websocket_limit() {
-        assert!(validate_config_update(None, None, Some(0), None, None, None).is_err());
+        assert!(validate_config_update(None, Some(0), None, None, None).is_err());
     }
 
     #[test]

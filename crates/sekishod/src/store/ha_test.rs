@@ -2799,7 +2799,7 @@ mod tests {
         let b_barrier = barrier.clone();
         let b_task = tokio::spawn(async move {
             b_barrier.wait().await;
-            b.update_config(serde_json::json!({"log_level": "debug"}))
+            b.update_config(serde_json::json!({"cookie_name": "_changed_session"}))
                 .await
         });
         barrier.wait().await;
@@ -2842,7 +2842,7 @@ mod tests {
             .expect("second config peer must join")
             .expect("second config peer must update");
         assert_eq!(b_result.session_lifetime_hours, 42);
-        assert_eq!(b_result.log_level, "debug");
+        assert_eq!(b_result.cookie_name, "_changed_session");
 
         cache_release_tx.send(()).unwrap();
         cache_holder.join().unwrap();
@@ -2860,7 +2860,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(persisted.session_lifetime_hours, 42);
-        assert_eq!(persisted.log_level, "debug");
+        assert_eq!(persisted.cookie_name, "_changed_session");
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT version FROM schema_versions WHERE resource = 'config'",
@@ -2874,9 +2874,9 @@ mod tests {
         let seen_a = fixture.a.get_config().await.unwrap();
         let seen_b = fixture.b.get_config().await.unwrap();
         assert_eq!(seen_a.session_lifetime_hours, 42);
-        assert_eq!(seen_a.log_level, "debug");
+        assert_eq!(seen_a.cookie_name, "_changed_session");
         assert_eq!(seen_b.session_lifetime_hours, 42);
-        assert_eq!(seen_b.log_level, "debug");
+        assert_eq!(seen_b.cookie_name, "_changed_session");
         fixture.close().await;
     }
 
@@ -2934,7 +2934,7 @@ mod tests {
                     .map(|_| ()),
                 "global_config" => fixture
                     .a
-                    .update_config(serde_json::json!({"log_level": "debug"}))
+                    .update_config(serde_json::json!({"cookie_name": "_changed_session"}))
                     .await
                     .map(|_| ()),
                 "acme_queue" => fixture
@@ -2980,11 +2980,11 @@ mod tests {
         assert_eq!(
             fixture
                 .a
-                .update_config(serde_json::json!({"log_level": "debug"}))
+                .update_config(serde_json::json!({"cookie_name": "_changed_session"}))
                 .await
                 .unwrap()
-                .log_level,
-            "debug"
+                .cookie_name,
+            "_changed_session"
         );
         assert_eq!(
             admitted(

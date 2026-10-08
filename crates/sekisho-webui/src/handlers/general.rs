@@ -54,8 +54,6 @@ pub struct ConfigFormBody {
     pub acme_issuance_concurrency_limit: String,
     #[serde(default)]
     pub acme_renewal_scan_interval_hours: String,
-    #[serde(default)]
-    pub log_level: String,
 }
 
 pub async fn update(
@@ -121,7 +119,6 @@ pub(crate) fn form_to_json(form: &ConfigFormBody) -> Value {
     if let Ok(n) = form.acme_renewal_scan_interval_hours.trim().parse::<u32>() {
         out.insert("acme_renewal_scan_interval_hours".into(), json!(n));
     }
-    put(&mut out, "log_level", &form.log_level);
     Value::Object(out)
 }
 
@@ -241,6 +238,12 @@ async fn render_full(
 mod tests {
     use super::*;
 
+    #[test]
+    fn hardening_removed_log_level_form_does_not_send_it() {
+        let form: ConfigFormBody = serde_json::from_value(json!({"log_level": "debug"})).unwrap();
+        assert!(form_to_json(&form).get("log_level").is_none());
+    }
+
     fn blank_form() -> ConfigFormBody {
         ConfigFormBody {
             auth_domain: String::new(),
@@ -254,7 +257,6 @@ mod tests {
             acme_queue_capacity: String::new(),
             acme_issuance_concurrency_limit: String::new(),
             acme_renewal_scan_interval_hours: String::new(),
-            log_level: String::new(),
         }
     }
 

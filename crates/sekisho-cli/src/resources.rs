@@ -360,7 +360,6 @@ fn build_resources() -> Vec<ResourceDef> {
                 leaf("acme_queue_capacity", "number"),
                 leaf("acme_issuance_concurrency_limit", "number"),
                 leaf("acme_renewal_scan_interval_hours", "number"),
-                leaf("log_level", "string"),
             ],
         },
         // Singleton instance resource — instance-local
@@ -480,6 +479,12 @@ pub fn is_idp_ref_field(resource: &str, path: &[String], field_kebab: &str) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardening_removed_log_level_is_not_a_global_config_field() {
+        let config = descriptor("sekisho").unwrap();
+        assert!(!config.fields.iter().any(|field| field.name == "log_level"));
+    }
 
     #[test]
     fn known_resources_are_present() {
