@@ -706,6 +706,77 @@ mod tests {
         .start_background_tasks(&shutdown)
     }
 
+    #[tokio::test]
+    async fn hardening_cleared_default_idp_rejects_route_without_explicit_idp() {
+        use tower::ServiceExt;
+        let store = crate::store::Store::new_for_test("sqlite::memory:", [15u8; 32], None)
+            .await
+            .unwrap();
+        store
+            .update_config(serde_json::json!({"default_idp_id": uuid::Uuid::nil()}))
+            .await
+            .unwrap();
+        let patch: crate::models::config::UpdateGlobalConfig =
+            serde_json::from_value(serde_json::json!({"default_idp_id": null})).unwrap();
+        store
+            .update_config(serde_json::to_value(patch).unwrap())
+            .await
+            .unwrap();
+        let route: Route = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(), "name": "protected", "from": "https://protected.example",
+            "to": ["http://127.0.0.1:1"], "access": {}, "enabled": true
+        }))
+        .unwrap();
+        store.create_route(&route).await.unwrap();
+        let provider = Arc::new(crate::tls::acme::challenge::Http01Provider::new(
+            store.clone(),
+        ));
+        let acme = Arc::new(crate::tls::acme::AcmeManager::new(
+            store.clone(),
+            provider,
+            "https://acme.invalid/directory",
+            None,
+        ));
+        let generation =
+            crate::route_generation::RouteGeneration::new_for_test(store.clone()).await;
+        let shutdown = Arc::new(crate::shutdown::ShutdownController::new());
+        let router = crate::proxy::router_with_limits(
+            store.clone(),
+            generation,
+            &[11u8; 64],
+            acme,
+            crate::crypto::MasterKey::from_test_bytes([12u8; 32]),
+            crate::crypto::JwtSigningKey::from_test_bytes([13u8; 32]),
+            Arc::new(crate::identity::IdentityAuthority::for_test(
+                "auth.example.com",
+            )),
+            true,
+            "sekisho_session".into(),
+            crate::proxy::ProxyConcurrencyLimits {
+                http: 2,
+                websocket: 2,
+            },
+            8,
+            shutdown.clone(),
+        )
+        .start_background_tasks(&shutdown);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::HOST, "protected.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(response.headers().get(header::LOCATION).is_none());
+        assert!(store.get_config().await.unwrap().default_idp_id.is_none());
+        shutdown.signal();
+        store.close().await;
+    }
+
     /// A browser-shaped `Accept` gets the HTML page, and the page is the fixed
     /// one — no request value reaches it.
     #[tokio::test]

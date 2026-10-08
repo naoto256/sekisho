@@ -184,16 +184,30 @@ impl Default for GlobalConfig {
 pub struct UpdateGlobalConfig {
     // proxy_listen / api_listen are no longer here — they live in the
     // per-instance bootstrap config now. PATCH them via `/instance`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_domain: Option<String>,
+    /// Absent leaves the stored value alone, `null` clears it, a value sets
+    /// it. `default_idp_id` and `acme_email` below follow the same rule.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auth_domain: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cookie_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_lifetime_hours: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_idp_id: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub acme_email: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_idp_id: Option<Option<Uuid>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub acme_email: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acme_directory: Option<String>,
     /// Same null-vs-missing story as `api_listen`. `Some(None)` clears
@@ -221,6 +235,31 @@ pub struct UpdateGlobalConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardening_nullable_config_patch_preserves_missing_null_and_value() {
+        for key in ["default_idp_id", "auth_domain", "acme_email"] {
+            let missing: UpdateGlobalConfig =
+                serde_json::from_value(serde_json::json!({})).unwrap();
+            assert!(serde_json::to_value(missing).unwrap().get(key).is_none());
+            let mut patch = serde_json::json!({});
+            patch[key] = serde_json::Value::Null;
+            let null: UpdateGlobalConfig = serde_json::from_value(patch).unwrap();
+            assert_eq!(
+                serde_json::to_value(null).unwrap().get(key),
+                Some(&serde_json::Value::Null)
+            );
+            let value = match key {
+                "default_idp_id" => uuid::Uuid::nil().to_string(),
+                "auth_domain" => "auth.example".into(),
+                _ => "operator@example.com".into(),
+            };
+            let mut patch = serde_json::json!({});
+            patch[key] = serde_json::json!(value);
+            let parsed: UpdateGlobalConfig = serde_json::from_value(patch.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), patch);
+        }
+    }
 
     #[test]
     fn limits_default_for_new_and_legacy_config() {
