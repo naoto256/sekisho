@@ -36,8 +36,22 @@ pub(super) fn json_merge_patch(base: &mut Value, patch: &Value) {
     }
 }
 
-pub(super) fn parse_value(s: &str) -> Value {
-    match s {
+/// Turn the text after `set <field>` into a JSON value.
+///
+/// A value wrapped in a matching pair of single or double quotes is a
+/// string: the quotes are removed and nothing inside is unescaped, which is
+/// how to stage `"true"`, `"42"` or text with spaces at its ends as a string.
+/// A value that opens with a quote but is not closed by a second, matching
+/// one is an error rather than a guess. Anything else is `true` / `false` /
+/// `null`, an integer, or failing those the text itself as a string.
+pub(super) fn parse_value(s: &str) -> Result<Value, &'static str> {
+    if let Some(quote @ ('\'' | '"')) = s.chars().next() {
+        if s.len() < 2 || !s.ends_with(quote) {
+            return Err("the opening quote must have a matching closing quote");
+        }
+        return Ok(Value::String(s[1..s.len() - 1].to_owned()));
+    }
+    Ok(match s {
         "true" => Value::Bool(true),
         "false" => Value::Bool(false),
         "null" => Value::Null,
@@ -48,7 +62,7 @@ pub(super) fn parse_value(s: &str) -> Value {
                 Value::String(s.to_string())
             }
         }
-    }
+    })
 }
 
 /// Walk `path` into `value`, returning the sub-tree or None if it doesn't
@@ -135,13 +149,13 @@ mod tests {
 
     #[test]
     fn parse_value_recognises_primitives() {
-        assert_eq!(parse_value("true"), json!(true));
-        assert_eq!(parse_value("false"), json!(false));
-        assert_eq!(parse_value("null"), Value::Null);
-        assert_eq!(parse_value("42"), json!(42));
-        assert_eq!(parse_value("hello"), json!("hello"));
+        assert_eq!(parse_value("true").unwrap(), json!(true));
+        assert_eq!(parse_value("false").unwrap(), json!(false));
+        assert_eq!(parse_value("null").unwrap(), Value::Null);
+        assert_eq!(parse_value("42").unwrap(), json!(42));
+        assert_eq!(parse_value("hello").unwrap(), json!("hello"));
         // Leading zeros / non-int-looking tokens remain as strings.
-        assert_eq!(parse_value("1.5"), json!("1.5"));
+        assert_eq!(parse_value("1.5").unwrap(), json!("1.5"));
     }
 
     #[test]

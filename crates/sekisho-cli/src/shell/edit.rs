@@ -76,17 +76,21 @@ pub(super) fn edit_prompt(host: &str, ctx: &EditContext) -> String {
 pub(super) async fn handle_edit_command(
     client: &ApiClient,
     edit_ctx: &mut Option<EditContext>,
-    parts: &[&str],
+    line: &str,
     _rl: &mut Editor<ShellHelper, DefaultHistory>,
 ) {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.is_empty() {
+        return;
+    }
     let verb = expand_verb(parts[0], EDIT_VERBS);
     match verb {
-        "set" => cmd_set(client, edit_ctx, parts).await,
-        "unset" => cmd_unset(edit_ctx, parts),
+        "set" => cmd_set(client, edit_ctx, line).await,
+        "unset" => cmd_unset(edit_ctx, &parts),
         "show" => cmd_show_edit(client, edit_ctx).await,
         "commit" => cmd_commit(client, edit_ctx).await,
         "edit-expr" => cmd_edit_expr(client, edit_ctx).await,
-        "edit" => cmd_enter_nested(edit_ctx, parts),
+        "edit" => cmd_enter_nested(edit_ctx, &parts),
         "up" => cmd_up(edit_ctx),
         "top" => cmd_top(edit_ctx),
         "rollback" => {
@@ -328,7 +332,8 @@ pub(super) async fn cmd_edit_expr(client: &ApiClient, edit_ctx: &mut Option<Edit
     eprintln!("expr staged ({} bytes); validate on `commit`", edited_len);
 }
 
-async fn cmd_set(client: &ApiClient, edit_ctx: &mut Option<EditContext>, parts: &[&str]) {
+async fn cmd_set(client: &ApiClient, edit_ctx: &mut Option<EditContext>, line: &str) {
+    let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 3 {
         eprintln!("usage: set <field> <value> [value2 ...]");
         return;
@@ -339,7 +344,15 @@ async fn cmd_set(client: &ApiClient, edit_ctx: &mut Option<EditContext>, parts: 
     };
 
     let field = parts[1];
-    let value_str = parts[2..].join(" ");
+    // The value is the rest of the line after `set <field>`, with only its
+    // ends trimmed. The whitespace-split `parts` would collapse runs of
+    // spaces inside it. Array and `idp_ref` fields below still read `parts`.
+    let mut value_str = line.trim();
+    for _ in 0..2 {
+        value_str = value_str
+            .split_once(char::is_whitespace)
+            .map_or("", |(_, rest)| rest.trim_start());
+    }
     let relative_keys = field_to_json_key(field);
 
     // Resolve metadata at the leaf selected by the same normalized segments
@@ -363,7 +376,7 @@ async fn cmd_set(client: &ApiClient, edit_ctx: &mut Option<EditContext>, parts: 
                 .collect(),
         )
     } else if idp_ref {
-        match resolve_idp_ref(client, value_str.trim()).await {
+        match resolve_idp_ref(client, &parts[2..].join(" ")).await {
             Ok(v) => v,
             Err(msg) => {
                 eprintln!("{msg}");
@@ -371,7 +384,13 @@ async fn cmd_set(client: &ApiClient, edit_ctx: &mut Option<EditContext>, parts: 
             }
         }
     } else {
-        parse_value(&value_str)
+        match parse_value(value_str) {
+            Ok(value) => value,
+            Err(message) => {
+                eprintln!("usage: set <field> <value>: {message}");
+                return;
+            }
+        }
     };
 
     let mut absolute_keys: Vec<String> = ctx.path.clone();
@@ -1020,6 +1039,95 @@ mod tests {
         });
     }
 
+    #[tokio::test]
+    async fn hardening_set_quotes_and_literal_spacing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client =
+            crate::api::tests::test_client(&format!("http://{}", listener.local_addr().unwrap()));
+        let mut editor = Editor::<ShellHelper, DefaultHistory>::new().unwrap();
+        for (command, field, expected) in [
+            (r#"set expr "true""#, "expr", json!("true")),
+            ("set expr '42'", "expr", json!("42")),
+            (r#"set expr """#, "expr", json!("")),
+            (r#"set expr " a  b ""#, "expr", json!(" a  b ")),
+            ("set expr ' a  b '", "expr", json!(" a  b ")),
+            (r#"set expr "a\nb""#, "expr", json!(r"a\nb")),
+            (r#"set expr "日本語""#, "expr", json!("日本語")),
+            ("set expr true", "expr", json!(true)),
+            ("set expr false", "expr", json!(false)),
+            ("set expr null", "expr", Value::Null),
+            ("set expr 42", "expr", json!(42)),
+            ("set expr -42", "expr", json!(-42)),
+            ("  se\t expr  a  b", "expr", json!("a  b")),
+            // These commands are the literal quick-start and Inline set expr examples.
+            (
+                r#"set access.policy claim.domain == "example.com""#,
+                "access",
+                json!({"policy":r#"claim.domain == "example.com""#}),
+            ),
+            (
+                r#"set expr claim.groups in ["c-suite", "vp"]"#,
+                "expr",
+                json!(r#"claim.groups in ["c-suite", "vp"]"#),
+            ),
+            (
+                r#"set expr 'claim.groups in ["c-suite", "vp"]'"#,
+                "expr",
+                json!(r#"claim.groups in ["c-suite", "vp"]"#),
+            ),
+        ] {
+            let mut context = Some(ctx_at("route", vec![]));
+            handle_edit_command(&client, &mut context, command, &mut editor).await;
+            assert_eq!(context.unwrap().changes[field], expected, "{command}");
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), listener.accept())
+                .await
+                .is_err(),
+            "scalar set must perform no network work"
+        );
+    }
+
+    #[tokio::test]
+    async fn hardening_set_unquoted_spacing() {
+        let mut context = Some(ctx_at("policy", vec![]));
+        cmd_set(&test_client(), &mut context, "set expr claim.x  ==  \"a\"").await;
+        assert_eq!(context.unwrap().changes["expr"], "claim.x  ==  \"a\"");
+    }
+
+    #[tokio::test]
+    async fn hardening_set_unmatched_quotes_no_network_or_patch() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client =
+            crate::api::tests::test_client(&format!("http://{}", listener.local_addr().unwrap()));
+        let mut editor = Editor::<ShellHelper, DefaultHistory>::new().unwrap();
+        for command in [
+            "set expr \"",
+            "set expr '",
+            "set expr \"true'",
+            "set expr '42\"",
+            "set expr \"a b",
+            "set expr 'a b",
+        ] {
+            let mut context = ctx_at("policy", vec![]);
+            context.changes.insert("name".into(), json!("keep-pending"));
+            let before = context.changes.clone();
+            let mut context = Some(context);
+            handle_edit_command(&client, &mut context, command, &mut editor).await;
+            assert_eq!(
+                context.unwrap().changes,
+                before,
+                "malformed quotes: {command}"
+            );
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), listener.accept())
+                .await
+                .is_err(),
+            "quote usage errors must perform no network work"
+        );
+    }
+
     fn ctx_at(resource: &str, path: Vec<&str>) -> EditContext {
         EditContext {
             resource: resource.into(),
@@ -1049,7 +1157,7 @@ mod tests {
         cmd_set(
             &test_client(),
             &mut ctx,
-            &["set", "oidc_config.scopes", "openid", "email"],
+            "set oidc_config.scopes openid email",
         )
         .await;
 
@@ -1067,13 +1175,8 @@ mod tests {
         let mut dotted = Some(ctx_at("idp", vec![]));
         let mut nested = Some(ctx_at("idp", vec!["oidc_config"]));
 
-        cmd_set(
-            &client,
-            &mut dotted,
-            &["set", "oidc_config.scopes", "openid", "email"],
-        )
-        .await;
-        cmd_set(&client, &mut nested, &["set", "scopes", "openid", "email"]).await;
+        cmd_set(&client, &mut dotted, "set oidc_config.scopes openid email").await;
+        cmd_set(&client, &mut nested, "set scopes openid email").await;
 
         assert_eq!(dotted.unwrap().changes, nested.unwrap().changes);
     }
@@ -1089,13 +1192,13 @@ mod tests {
         cmd_set(
             &client,
             &mut headers,
-            &["set", "headers.remove", "cookie", "authorization"],
+            "set headers.remove cookie authorization",
         )
         .await;
         cmd_set(
             &client,
             &mut upstreams,
-            &["set", "to", "http://a.example", "http://b.example"],
+            "set to http://a.example http://b.example",
         )
         .await;
 
@@ -1118,16 +1221,11 @@ mod tests {
         let mut scalar = Some(ctx_at("idp", vec![]));
         let mut invalid = Some(ctx_at("idp", vec![]));
 
-        cmd_set(
-            &client,
-            &mut scalar,
-            &["set", "oidc_config.prompt", "login", "consent"],
-        )
-        .await;
+        cmd_set(&client, &mut scalar, "set oidc_config.prompt login consent").await;
         cmd_set(
             &client,
             &mut invalid,
-            &["set", "oidc_config.missing.scopes", "one", "two"],
+            "set oidc_config.missing.scopes one two",
         )
         .await;
 

@@ -159,7 +159,7 @@ pub async fn run(client: ApiClient) {
         }
 
         if edit_ctx.is_some() {
-            handle_edit_command(&client, &mut edit_ctx, &parts, &mut rl).await;
+            handle_edit_command(&client, &mut edit_ctx, &line, &mut rl).await;
             // Sync the completion helper to the post-command state: if we
             // left edit mode, clear both fields; otherwise mirror the
             // possibly-updated scope path.

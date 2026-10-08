@@ -187,12 +187,12 @@ sekisho@iap edit route/grafana> commit
 sekisho@iap# exit
 ```
 
-Type the policy expression exactly as written. `set` takes everything
-after the field name verbatim — it does not unquote or unescape
-anything — so the quotes around `"example.com"` are the policy
-language's own string syntax and belong there. What must not be added
-is an outer pair wrapping the whole expression: those characters would
-be stored too, and it would stop parsing.
+Type the policy expression as written: the quotes around `"example.com"`
+belong to the policy language. `set` preserves consecutive spaces and
+does not process escapes. Wrapping the entire value in matching single
+or double quotes removes only that outer pair and treats it as a string.
+See [Inline `set expr`](./configuration/policies.md#inline-set-expr)
+for the quoting rules.
 
 **Do not skip `access.policy`.** An empty policy denies everyone, so a
 route without one lets your users sign in successfully and then
