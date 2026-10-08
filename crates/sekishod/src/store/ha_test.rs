@@ -1309,6 +1309,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hardening_nullable_config_postgres_clear_is_visible_to_both_stores() {
+        use axum::{Extension, extract::State, response::IntoResponse};
+        use http_body_util::BodyExt;
+
+        let Some(fixture) = PgStoreFixture::new("nullable_config").await else {
+            eprintln!("SKIP_POSTGRES_NULLABLE_CONFIG:TEST_POSTGRES_URL_ABSENT");
+            return;
+        };
+        eprintln!("LIVE_POSTGRES_NULLABLE_CONFIG_ACQUIRED");
+        for (value, cleared, restart) in [
+            (
+                serde_json::json!({"auth_domain": "auth.example",
+                "default_idp_id": uuid::Uuid::nil(), "acme_email": "operator@example.com"}),
+                false,
+                true,
+            ),
+            (serde_json::json!({}), false, false),
+            (
+                serde_json::json!({"auth_domain": null,
+                "default_idp_id": null, "acme_email": null}),
+                true,
+                true,
+            ),
+        ] {
+            let patch = serde_json::from_value(value).unwrap();
+            let response = crate::api::config::update(
+                State(fixture.a.clone()),
+                Extension(crate::audit::Actor::system()),
+                crate::api::SanitizedJson(patch),
+            )
+            .await
+            .unwrap()
+            .into_response();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(response.get("_restart_required").is_some(), restart);
+            if restart {
+                assert_eq!(
+                    response["_restart_required"],
+                    serde_json::json!(["auth_domain"])
+                );
+            }
+            for store in [&fixture.a, &fixture.b] {
+                let config = store.get_config().await.unwrap();
+                if cleared {
+                    assert!(config.auth_domain.is_none());
+                    assert!(config.default_idp_id.is_none());
+                    assert!(config.acme_email.is_none());
+                } else {
+                    assert_eq!(config.auth_domain.as_deref(), Some("auth.example"));
+                    assert_eq!(config.default_idp_id, Some(uuid::Uuid::nil()));
+                    assert_eq!(config.acme_email.as_deref(), Some("operator@example.com"));
+                }
+            }
+        }
+        fixture.close().await;
+        eprintln!("LIVE_POSTGRES_NULLABLE_CONFIG_CLEAR_PASS");
+    }
+
+    #[tokio::test]
     async fn version_bump_is_tx_bound() {
         // When an update fails — here via a unique-name conflict on
         // rename — the tx rolls back and the version counter must stay

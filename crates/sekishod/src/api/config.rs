@@ -44,7 +44,9 @@ pub async fn update(
     Extension(actor): Extension<Actor>,
     SanitizedJson(body): SanitizedJson<UpdateGlobalConfig>,
 ) -> Result<impl IntoResponse> {
-    if let Some(auth_domain) = body.auth_domain.as_deref() {
+    // Only a new value needs validating. `null` clears the domain; it is
+    // still listed as restart-required below.
+    if let Some(Some(auth_domain)) = &body.auth_domain {
         crate::identity::IdentityAuthority::validate_auth_domain(auth_domain).map_err(|_| {
             crate::error::Error::BadRequest(crate::identity::INVALID_AUTH_DOMAIN.into())
         })?;
@@ -101,6 +103,51 @@ pub async fn update(
 mod tests {
     use super::*;
     use http_body_util::BodyExt;
+
+    #[tokio::test]
+    async fn hardening_nullable_config_api_clears_sqlite_and_marks_auth_restart() {
+        let store = crate::store::Store::new_for_test("sqlite::memory:", [0x75; 32], None)
+            .await
+            .unwrap();
+        let values = serde_json::json!({"default_idp_id": uuid::Uuid::nil(),
+            "auth_domain": "auth.example", "acme_email": "operator@example.com"});
+        let config = store.update_config(values).await.unwrap();
+        assert!(config.default_idp_id.is_some());
+        let missing: UpdateGlobalConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        update(
+            State(store.clone()),
+            Extension(Actor::system()),
+            SanitizedJson(missing),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store.get_config().await.unwrap().auth_domain.as_deref(),
+            Some("auth.example")
+        );
+        let clear: UpdateGlobalConfig = serde_json::from_value(serde_json::json!({
+            "default_idp_id": null, "auth_domain": null, "acme_email": null
+        }))
+        .unwrap();
+        let response = update(
+            State(store.clone()),
+            Extension(Actor::system()),
+            SanitizedJson(clear),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value["_restart_required"],
+            serde_json::json!(["auth_domain"])
+        );
+        let config = store.get_config().await.unwrap();
+        assert!(config.default_idp_id.is_none());
+        assert!(config.auth_domain.is_none());
+        assert!(config.acme_email.is_none());
+    }
 
     #[tokio::test]
     async fn auth_domain_update_is_validated_and_declared_restart_required() {

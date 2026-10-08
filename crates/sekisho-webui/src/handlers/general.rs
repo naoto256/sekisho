@@ -72,7 +72,22 @@ pub async fn update(
 
 pub(crate) fn form_to_json(form: &ConfigFormBody) -> Value {
     let mut out = serde_json::Map::new();
-    put(&mut out, "auth_domain", &form.auth_domain);
+    // These two can be cleared in the stored config, and a form always
+    // submits every field: a blank box is the operator emptying it, so it is
+    // sent as an explicit `null` (clear) rather than left out (keep).
+    for (key, value) in [
+        ("auth_domain", &form.auth_domain),
+        ("acme_email", &form.acme_email),
+    ] {
+        out.insert(
+            key.into(),
+            if value.trim().is_empty() {
+                Value::Null
+            } else {
+                Value::String(value.trim().to_string())
+            },
+        );
+    }
     put(&mut out, "cookie_name", &form.cookie_name);
     if let Ok(n) = form.session_lifetime_hours.trim().parse::<u32>() {
         out.insert("session_lifetime_hours".into(), json!(n));
@@ -85,7 +100,6 @@ pub(crate) fn form_to_json(form: &ConfigFormBody) -> Value {
     } else {
         out.insert("default_idp_id".into(), Value::Null);
     }
-    put(&mut out, "acme_email", &form.acme_email);
     put(&mut out, "acme_directory", &form.acme_directory);
     if form.acme_leader.trim().is_empty() {
         out.insert("acme_leader".into(), Value::Null);
@@ -111,6 +125,8 @@ pub(crate) fn form_to_json(form: &ConfigFormBody) -> Value {
     Value::Object(out)
 }
 
+/// Insert a trimmed value, or nothing when it is blank. For fields that
+/// cannot be cleared, where a blank box means "leave as is".
 fn put(map: &mut serde_json::Map<String, Value>, key: &str, v: &str) {
     let t = v.trim();
     if !t.is_empty() {
@@ -247,6 +263,27 @@ mod tests {
         let f = blank_form();
         let j = form_to_json(&f);
         assert_eq!(j["default_idp_id"], Value::Null);
+    }
+
+    #[test]
+    fn hardening_nullable_config_form_blanks_clear_all_three_fields() {
+        let mut form = blank_form();
+        form.auth_domain = "  ".into();
+        form.acme_email = "  ".into();
+        let patch = form_to_json(&form);
+        for key in ["auth_domain", "default_idp_id", "acme_email"] {
+            assert_eq!(patch.get(key), Some(&Value::Null));
+        }
+        form.auth_domain = " auth.example ".into();
+        form.default_idp_id = " 00000000-0000-0000-0000-000000000000 ".into();
+        form.acme_email = " operator@example.com ".into();
+        let patch = form_to_json(&form);
+        assert_eq!(patch["auth_domain"], "auth.example");
+        assert_eq!(
+            patch["default_idp_id"],
+            "00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(patch["acme_email"], "operator@example.com");
     }
 
     #[test]
