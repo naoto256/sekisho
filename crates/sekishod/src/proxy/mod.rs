@@ -631,7 +631,8 @@ fn router_with_limits(
 /// ACME server fetches it over plain HTTP from the internet, unauthenticated
 /// — the one endpoint here that is meant to be reachable by anyone. Unknown
 /// tokens return 404 rather than an error body: the provider holds the only
-/// valid tokens, so anything else is a scan.
+/// valid tokens, so anything else is a scan. For the same reason the token is
+/// logged by length only — it is whatever the caller put in the path.
 async fn acme_challenge_handler(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(token): axum::extract::Path<String>,
@@ -643,11 +644,11 @@ async fn acme_challenge_handler(
         .await
     {
         Some(key_auth) => {
-            tracing::debug!(token = %token, "serving ACME challenge response");
+            tracing::debug!(token_len = token.len(), "serving ACME challenge response");
             Ok(key_auth)
         }
         None => {
-            tracing::debug!(token = %token, "ACME challenge token not found");
+            tracing::debug!(token_len = token.len(), "ACME challenge token not found");
             Err(axum::http::StatusCode::NOT_FOUND)
         }
     }

@@ -877,9 +877,11 @@ fn build_http_listener_app(
                     async move {
                         match acme.challenge_provider().get_response(&token).await {
                             Some(key_auth) => {
+                                // Length only: the token is taken straight
+                                // from the path of an unauthenticated request.
                                 tracing::debug!(
                                     target: "sekishod",
-                                    token = %token,
+                                    token_len = token.len(),
                                     "serving ACME challenge (HTTP)"
                                 );
                                 axum::response::IntoResponse::into_response(key_auth)
@@ -1636,6 +1638,151 @@ mod tests {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     const UPPER_MASTER_KEY: &str =
         "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+
+    #[test]
+    fn hardening_acme_logs_contain_only_token_length() {
+        const NAME: &str = "runtime::tests::hardening_acme_logs_contain_only_token_length";
+        const CHILD: &str = "SEKISHO_ACME_LOG_TEST_CHILD";
+        // Runs alone in a child process: `tracing` caches callsite `Interest`
+        // once per process, so the subscriber installed below would otherwise
+        // share that cache with every other test in this binary.
+        if std::env::var(CHILD).as_deref() != Ok(NAME) {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env(CHILD, NAME)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success()
+                    && stdout.contains(&format!("test {NAME} ... ok"))
+                    && stdout.contains("1 passed; 0 failed; 0 ignored"),
+                "{stdout}\n{stderr}"
+            );
+            return;
+        }
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        use tracing_subscriber::util::SubscriberInitExt;
+        let buffer = Buffer::default();
+        let writer = buffer.clone();
+        let _guard = tracing_subscriber::fmt()
+            .json()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || writer.clone())
+            .finish()
+            .set_default();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                use acme_core::ChallengeProvider;
+                use http_body_util::BodyExt;
+                const TOKEN: &str = "challenge-private-token-sentinel";
+                const MISSING: &str = "missing-private-token-sentinel";
+                let store = Store::new_for_test("sqlite::memory:", [0x64; 32], None)
+                    .await
+                    .unwrap();
+                let provider = Arc::new(crate::tls::acme::challenge::Http01Provider::new(
+                    store.clone(),
+                ));
+                provider
+                    .set("auth.example", TOKEN, "proof-response")
+                    .await
+                    .unwrap();
+                let acme = Arc::new(AcmeManager::new(
+                    store.clone(),
+                    provider,
+                    "https://acme.invalid/directory",
+                    None,
+                ));
+                let generation = crate::route_generation::RouteGeneration::new_ready_empty_for_test(
+                    store.clone(),
+                );
+                let identity =
+                    Arc::new(crate::identity::IdentityAuthority::for_test("auth.example"));
+                let http = build_http_listener_app(
+                    acme.clone(),
+                    generation.clone(),
+                    identity.clone(),
+                    Arc::new(AcceptFrom::any()),
+                );
+                let shutdown = Arc::new(crate::shutdown::ShutdownController::new());
+                let proxy = crate::proxy::router(
+                    store,
+                    generation,
+                    &[1; 64],
+                    acme,
+                    crate::crypto::MasterKey::from_test_bytes([2; 32]),
+                    crate::crypto::IdentityKeyRingSnapshot::from_test_bytes([3; 32]),
+                    identity,
+                    true,
+                    "sekisho_session".into(),
+                    2,
+                    shutdown.clone(),
+                );
+                for (app, prefix) in [(http, ""), (proxy, "/.sekisho")] {
+                    for (token, status) in [
+                        (TOKEN, axum::http::StatusCode::OK),
+                        (MISSING, axum::http::StatusCode::NOT_FOUND),
+                    ] {
+                        let response = app
+                            .clone()
+                            .oneshot(http_request(
+                                &format!("{prefix}/.well-known/acme-challenge/{token}"),
+                                Some(b"auth.example"),
+                            ))
+                            .await
+                            .unwrap();
+                        assert_eq!(response.status(), status);
+                        if status.is_success() {
+                            assert_eq!(
+                                response.into_body().collect().await.unwrap().to_bytes(),
+                                "proof-response"
+                            );
+                        }
+                    }
+                }
+                shutdown.signal();
+                let bytes = buffer.0.lock().unwrap();
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(!text.contains(TOKEN) && !text.contains(MISSING));
+                assert!(!text.contains("private-token"));
+                let events: Vec<serde_json::Value> = text
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .filter(|line: &serde_json::Value| line["fields"]["token_len"].is_number())
+                    .collect();
+                assert_eq!(
+                    events.len(),
+                    3,
+                    "HTTP hit and proxy hit/miss must log lengths"
+                );
+                for event in events {
+                    let fields = event["fields"].as_object().unwrap();
+                    assert!(
+                        fields
+                            .keys()
+                            .all(|key| key == "message" || key == "token_len")
+                    );
+                    assert!(
+                        [TOKEN.len(), MISSING.len()]
+                            .contains(&(fields["token_len"].as_u64().unwrap() as usize))
+                    );
+                }
+            });
+    }
 
     fn hardening_tls_configs() -> (tokio_rustls::TlsAcceptor, Arc<rustls::ClientConfig>) {
         use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
