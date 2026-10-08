@@ -1262,22 +1262,103 @@ pub(crate) struct TlsService {
     pub tcp_behavior: TcpBehavior,
 }
 
-/// Serve axum app over TLS using a custom TLS acceptor.
+/// Serve axum app over TLS using a custom TLS acceptor, with the production
+/// [`TLS_TIMEOUTS`]. The loop itself is [`serve_tls_with_accept`].
 async fn serve_tls(
     listener: TcpListener,
     tls_acceptor: tokio_rustls::TlsAcceptor,
     service: TlsService,
     accept_from: Arc<AcceptFrom>,
-    mut shutdown: shutdown::ShutdownSignal,
+    shutdown: shutdown::ShutdownSignal,
 ) -> anyhow::Result<()> {
+    serve_tls_with_accept(
+        || listener.accept(),
+        tls_acceptor,
+        service,
+        accept_from,
+        shutdown,
+        TLS_TIMEOUTS,
+    )
+    .await
+}
+
+/// Deadlines for one TLS listener. A struct so tests can shorten them;
+/// production uses [`TLS_TIMEOUTS`].
+#[derive(Clone, Copy)]
+struct TlsTimeouts {
+    /// From TCP accept to a completed TLS handshake. Without it a peer that
+    /// connects and then says nothing holds its socket and task for as long
+    /// as it stays connected.
+    handshake: std::time::Duration,
+    /// For an HTTP/1 connection to deliver a complete request head. HTTP/2
+    /// has no equivalent here: an HTTP/2 connection that sends nothing is not
+    /// closed by this.
+    header_read: std::time::Duration,
+    /// Pause after an accept error that is not about a single connection, so
+    /// a condition that persists (running out of file descriptors, for one)
+    /// is retried about once a second instead of in a tight loop.
+    accept_backoff: std::time::Duration,
+}
+
+const TLS_TIMEOUTS: TlsTimeouts = TlsTimeouts {
+    handshake: std::time::Duration::from_secs(10),
+    header_read: std::time::Duration::from_secs(30),
+    accept_backoff: std::time::Duration::from_secs(1),
+};
+
+/// The accept loop behind [`serve_tls`]. `accept` is a parameter so tests can
+/// inject accept errors.
+///
+/// Returns only on shutdown. An accept error never ends the loop: errors
+/// about one connection (aborted, reset, refused) go straight to the next
+/// accept, and anything else is logged and retried after `accept_backoff`,
+/// which shutdown interrupts. No error is treated as fatal. While such a
+/// condition lasts new connections may not be accepted, but the listener is
+/// still being polled when it clears.
+async fn serve_tls_with_accept<F, Fut>(
+    mut accept: F,
+    tls_acceptor: tokio_rustls::TlsAcceptor,
+    service: TlsService,
+    accept_from: Arc<AcceptFrom>,
+    mut shutdown: shutdown::ShutdownSignal,
+    timeouts: TlsTimeouts,
+) -> anyhow::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<(tokio::net::TcpStream, std::net::SocketAddr)>>,
+{
     loop {
-        let (stream, addr) = tokio::select! {
+        let accepted = tokio::select! {
             biased;
             _ = shutdown.wait() => {
                 tracing::info!(target: "sekishod", "TLS proxy server shutting down");
                 return Ok(());
             }
-            result = listener.accept() => result?,
+            result = async { accept().await } => result,
+        };
+        let (stream, addr) = match accepted {
+            Ok(connection) => connection,
+            // These describe the connection being accepted, not the listener,
+            // so there is nothing to back off from.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                tracing::error!(target: "sekishod", error = %error, "TLS listener accept failed; retrying after backoff");
+                tokio::select! {
+                    biased;
+                    _ = shutdown.wait() => return Ok(()),
+                    _ = tokio::time::sleep(timeouts.accept_backoff) => {}
+                }
+                continue;
+            }
         };
         // Source-IP ACL check before TLS handshake. Drops the
         // connection by closing the TcpStream — no TLS round-trip,
@@ -1300,8 +1381,11 @@ async fn serve_tls(
         let app = service.app.clone();
 
         tokio::spawn(async move {
-            match acceptor.accept(stream).await {
-                Ok(tls_stream) => {
+            // The handshake runs in the per-connection task, so a slow peer
+            // delays only itself; the deadline bounds how long it can hold
+            // that task.
+            match tokio::time::timeout(timeouts.handshake, acceptor.accept(stream)).await {
+                Ok(Ok(tls_stream)) => {
                     // Inject ConnectInfo so transforms can access client IP.
                     // Use a middleware that inserts directly into request extensions
                     // (same location as into_make_service_with_connect_info).
@@ -1323,27 +1407,36 @@ async fn serve_tls(
                     // Without this, every `wss://` request through
                     // the TLS proxy fails with "upgrade expected but
                     // low level API in use".
-                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                    let mut builder = hyper_util::server::conn::auto::Builder::new(
                         hyper_util::rt::TokioExecutor::new(),
-                    )
-                    .serve_connection_with_upgrades(io, service)
-                    .await
-                    {
-                        tracing::debug!(
-                            target: "sekishod",
-                            addr = %addr,
-                            error = %e,
-                            "connection error"
-                        );
+                    );
+                    // Header deadline for HTTP/1 only; hyper enforces it only
+                    // with a timer installed, hence `.timer(..)`. HTTP/2
+                    // connections are left as they were.
+                    builder
+                        .http1()
+                        .timer(hyper_util::rt::TokioTimer::new())
+                        .header_read_timeout(timeouts.header_read);
+                    if let Err(e) = builder.serve_connection_with_upgrades(io, service).await {
+                        if e.downcast_ref::<hyper::Error>()
+                            .is_some_and(hyper::Error::is_timeout)
+                        {
+                            tracing::debug!(target: "sekishod", peer = %addr, "HTTP/1 header read timed out");
+                        } else {
+                            tracing::debug!(target: "sekishod", addr = %addr, error = %e, "connection error");
+                        }
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::debug!(
                         target: "sekishod",
                         addr = %addr,
                         error = %e,
                         "TLS handshake failed"
                     );
+                }
+                Err(_) => {
+                    tracing::debug!(target: "sekishod", peer = %addr, "TLS handshake timed out");
                 }
             }
         });
@@ -1543,6 +1636,323 @@ mod tests {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     const UPPER_MASTER_KEY: &str =
         "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+
+    fn hardening_tls_configs() -> (tokio_rustls::TlsAcceptor, Arc<rustls::ClientConfig>) {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        let params = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let der = CertificateDer::from(cert.der().to_vec());
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut server = rustls::ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![der.clone()],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+            )
+            .unwrap();
+        server.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(der).unwrap();
+        let client = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        (
+            tokio_rustls::TlsAcceptor::from(Arc::new(server)),
+            Arc::new(client),
+        )
+    }
+
+    async fn hardening_tls_server(
+        app: axum::Router,
+        timeouts: TlsTimeouts,
+    ) -> (
+        std::net::SocketAddr,
+        Arc<rustls::ClientConfig>,
+        Arc<shutdown::ShutdownController>,
+        tokio::task::JoinHandle<anyhow::Result<()>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (acceptor, client) = hardening_tls_configs();
+        let ctl = Arc::new(shutdown::ShutdownController::new());
+        let signal = ctl.subscribe();
+        let task = tokio::spawn(async move {
+            serve_tls_with_accept(
+                || listener.accept(),
+                acceptor,
+                TlsService {
+                    app,
+                    tcp_behavior: TcpBehavior::default(),
+                },
+                Arc::new(AcceptFrom::any()),
+                signal,
+                timeouts,
+            )
+            .await
+        });
+        (addr, client, ctl, task)
+    }
+
+    async fn hardening_tls_connect(
+        addr: std::net::SocketAddr,
+        client: Arc<rustls::ClientConfig>,
+    ) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio_rustls::TlsConnector::from(client)
+            .connect(
+                rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+                stream,
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn hardening_tls_accept_retries_connection_and_resource_errors() {
+        use std::io::{Error, ErrorKind};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let connection = listener.accept().await.unwrap();
+        let mut results = std::collections::VecDeque::from([
+            Err(Error::from(ErrorKind::ConnectionAborted)),
+            Err(Error::from(ErrorKind::ConnectionReset)),
+            Err(Error::from(ErrorKind::ConnectionRefused)),
+            Err(Error::from_raw_os_error(libc::EMFILE)),
+            Ok(connection),
+        ]);
+        let ctl = Arc::new(shutdown::ShutdownController::new());
+        let (acceptor, _) = hardening_tls_configs();
+        let mut calls = 0;
+        let mut attempts = Vec::new();
+        let start = tokio::time::Instant::now();
+        let backoff = std::time::Duration::from_millis(50);
+        let result = serve_tls_with_accept(
+            || {
+                calls += 1;
+                attempts.push(tokio::time::Instant::now());
+                let result = results
+                    .pop_front()
+                    .expect("unexpected extra accept attempt");
+                let controller = ctl.clone();
+                async move {
+                    if result.is_ok() {
+                        controller.signal();
+                    }
+                    result
+                }
+            },
+            acceptor,
+            TlsService {
+                app: axum::Router::new(),
+                tcp_behavior: TcpBehavior::default(),
+            },
+            Arc::new(AcceptFrom::any()),
+            ctl.subscribe(),
+            TlsTimeouts {
+                accept_backoff: backoff,
+                ..TLS_TIMEOUTS
+            },
+        )
+        .await;
+        assert!(result.is_ok(), "accept error killed the listener");
+        assert_eq!(calls, 5);
+        assert!(
+            attempts[3] - attempts[0] < backoff,
+            "connection errors must not back off"
+        );
+        assert!(
+            attempts[4] - attempts[3] >= backoff,
+            "resource retry busy-looped"
+        );
+        assert!(start.elapsed() >= backoff, "resource retry busy-looped");
+        drop(peer);
+    }
+
+    #[tokio::test]
+    async fn hardening_tls_shutdown_interrupts_accept_backoff() {
+        let ctl = Arc::new(shutdown::ShutdownController::new());
+        let (acceptor, _) = hardening_tls_configs();
+        let mut calls = 0;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            serve_tls_with_accept(
+                || {
+                    calls += 1;
+                    let controller = ctl.clone();
+                    async move {
+                        controller.signal();
+                        Err(std::io::Error::from_raw_os_error(libc::EMFILE))
+                    }
+                },
+                acceptor,
+                TlsService {
+                    app: axum::Router::new(),
+                    tcp_behavior: TcpBehavior::default(),
+                },
+                Arc::new(AcceptFrom::any()),
+                ctl.subscribe(),
+                TLS_TIMEOUTS,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_ok());
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test]
+    async fn hardening_tls_idle_handshake_closes() {
+        use tokio::io::AsyncReadExt;
+        assert_eq!(TLS_TIMEOUTS.handshake, std::time::Duration::from_secs(10));
+        assert_eq!(TLS_TIMEOUTS.header_read, std::time::Duration::from_secs(30));
+        assert_eq!(
+            TLS_TIMEOUTS.accept_backoff,
+            std::time::Duration::from_secs(1)
+        );
+        let timeouts = TlsTimeouts {
+            handshake: std::time::Duration::from_millis(50),
+            header_read: std::time::Duration::from_millis(50),
+            ..TLS_TIMEOUTS
+        };
+        let (addr, _, ctl, task) = hardening_tls_server(axum::Router::new(), timeouts).await;
+        let mut idle = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut byte = [0];
+        let closed =
+            tokio::time::timeout(std::time::Duration::from_millis(500), idle.read(&mut byte)).await;
+        ctl.signal();
+        task.await.unwrap().unwrap();
+        assert!(
+            matches!(closed, Ok(Ok(0) | Err(_))),
+            "idle handshake was not closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn hardening_tls_partial_h1_header_closes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let timeouts = TlsTimeouts {
+            header_read: std::time::Duration::from_millis(50),
+            ..TLS_TIMEOUTS
+        };
+        let (addr, client, ctl, task) = hardening_tls_server(axum::Router::new(), timeouts).await;
+        let mut tls = hardening_tls_connect(addr, client).await;
+        tls.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nX-Partial:")
+            .await
+            .unwrap();
+        let mut byte = [0];
+        let closed =
+            tokio::time::timeout(std::time::Duration::from_millis(500), tls.read(&mut byte)).await;
+        ctl.signal();
+        task.await.unwrap().unwrap();
+        assert!(
+            matches!(closed, Ok(Ok(0) | Err(_))),
+            "partial H1 header was not closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn hardening_tls_normal_h1_h2_and_websocket_upgrade_are_preserved() {
+        use http_body_util::{BodyExt, Empty};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (tx, mut upgrades) = tokio::sync::mpsc::unbounded_channel();
+        let app = axum::Router::new()
+            .route("/", axum::routing::get(|| async { "ok" }))
+            .route(
+                "/ws",
+                axum::routing::get(move |request: axum::http::Request<axum::body::Body>| {
+                    let tx = tx.clone();
+                    async move {
+                        let upgrade = hyper::upgrade::on(request);
+                        tokio::spawn(async move {
+                            let socket = upgrade.await.unwrap();
+                            let mut io = hyper_util::rt::TokioIo::new(socket);
+                            io.shutdown().await.unwrap();
+                            tx.send(()).unwrap();
+                        });
+                        axum::http::Response::builder()
+                            .status(101)
+                            .header("Connection", "Upgrade")
+                            .header("Upgrade", "websocket")
+                            .header("Sec-WebSocket-Accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+                            .body(axum::body::Body::empty())
+                            .unwrap()
+                    }
+                }),
+            );
+        let timeouts = TlsTimeouts {
+            header_read: std::time::Duration::from_millis(100),
+            ..TLS_TIMEOUTS
+        };
+        let (addr, client, ctl, task) = hardening_tls_server(app, timeouts).await;
+
+        let mut h1 = hardening_tls_connect(addr, client.clone()).await;
+        h1.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut wire = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(2), h1.read_to_end(&mut wire))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(wire.starts_with(b"HTTP/1.1 200"));
+        assert!(wire.ends_with(b"ok"));
+
+        let mut h2_config = (*client).clone();
+        h2_config.alpn_protocols = vec![b"h2".to_vec()];
+        let tls = hardening_tls_connect(addr, Arc::new(h2_config)).await;
+        assert_eq!(tls.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+        let (mut requests, connection) =
+            hyper::client::conn::http2::handshake::<_, _, Empty<axum::body::Bytes>>(
+                hyper_util::rt::TokioExecutor::new(),
+                hyper_util::rt::TokioIo::new(tls),
+            )
+            .await
+            .unwrap();
+        let h2_task = tokio::spawn(connection);
+        // The H1 deadline must not terminate an established HTTP/2 connection.
+        tokio::time::sleep(timeouts.header_read * 2).await;
+        let response = requests
+            .send_request(
+                axum::http::Request::builder()
+                    .uri("https://localhost/")
+                    .body(Empty::new())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "ok"
+        );
+        drop(requests);
+        h2_task.abort();
+        let _ = h2_task.await;
+
+        let mut ws = hardening_tls_connect(addr, client).await;
+        ws.write_all(b"GET /ws HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").await.unwrap();
+        let mut wire = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(2), ws.read_to_end(&mut wire))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(wire.starts_with(b"HTTP/1.1 101"));
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), upgrades.recv())
+                .await
+                .unwrap(),
+            Some(())
+        );
+        ctl.signal();
+        task.await.unwrap().unwrap();
+    }
 
     #[tokio::test]
     async fn pre_signalled_serve_tls_returns_without_accepting() {
