@@ -36,7 +36,7 @@ use crate::store::Store;
 /// a single struct beats two mostly-overlapping types because the
 /// store then stays protocol-agnostic and the DB schema needs one
 /// table, not two.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PendingAuth {
     pub idp_id: Uuid,
     pub nonce: String,
@@ -59,6 +59,32 @@ pub struct PendingAuth {
     /// without rewriting in-flight rows; coordinated upgrades reject those
     /// legacy rows rather than silently bypassing browser binding.
     pub browser_nonce_hash: Option<String>,
+}
+
+/// Hand-written so the values that bind a callback to this flow never reach a
+/// log through `{:?}`: the nonce, the PKCE verifier, the SAML request id and
+/// the browser-nonce hash, plus `redirect_url`, the post-login return URL.
+/// Fields are listed explicitly, so one added later stays out of the output
+/// until it is added here.
+impl std::fmt::Debug for PendingAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingAuth")
+            .field("idp_id", &self.idp_id)
+            .field("nonce", &"[REDACTED]")
+            .field("code_verifier", &"[REDACTED]")
+            .field("redirect_url", &"[REDACTED]")
+            .field("created_at", &self.created_at)
+            .field(
+                "saml_authn_request_id",
+                &self.saml_authn_request_id.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("kind", &self.kind)
+            .field(
+                "browser_nonce_hash",
+                &self.browser_nonce_hash.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 /// Discriminator for what kind of IdP round-trip is in flight.
@@ -199,6 +225,34 @@ impl AuthStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardening_pending_auth_debug_redacts_roundtrip_secrets() {
+        let pending = PendingAuth {
+            idp_id: Uuid::nil(),
+            nonce: "nonce-sentinel".into(),
+            code_verifier: "verifier-sentinel".into(),
+            redirect_url: "https://route.example/?code=redirect-sentinel".into(),
+            created_at: chrono::Utc::now(),
+            saml_authn_request_id: Some("saml-sentinel".into()),
+            kind: PendingAuthKind::Login,
+            browser_nonce_hash: Some("browser-sentinel".into()),
+        };
+        let output = format!("{pending:?}");
+        for value in [
+            "nonce-sentinel",
+            "verifier-sentinel",
+            "redirect-sentinel",
+            "saml-sentinel",
+            "browser-sentinel",
+        ] {
+            assert!(
+                !output.contains(value),
+                "PendingAuth Debug exposed a round-trip value"
+            );
+        }
+        assert!(output.contains("[REDACTED]"));
+    }
 
     #[test]
     fn browser_nonce_requires_exact_present_hash_and_value() {
