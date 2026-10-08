@@ -10,12 +10,23 @@ use crate::error::{Error, Result};
 use crate::models::idp::IdentityProvider;
 use auth_idp::oidc::OidcIdpConfig;
 
-impl From<&IdentityProvider> for OidcIdpConfig {
-    fn from(idp: &IdentityProvider) -> Self {
-        let cfg = idp.oidc_config.as_ref().expect("expected OIDC IdP");
-        OidcIdpConfig {
-            issuer_url: cfg.issuer_url.clone(),
+/// Fallible because an IdP's `type` and its config are independent fields: a
+/// provider that is not OIDC, or one with no `oidc_config`, is a
+/// configuration error for the request that reached it rather than a panic.
+impl TryFrom<&IdentityProvider> for OidcIdpConfig {
+    type Error = Error;
+
+    fn try_from(idp: &IdentityProvider) -> Result<Self> {
+        if idp.idp_type != crate::models::idp::IdpType::Oidc {
+            return Err(Error::ConfigurationError("expected OIDC IdP".into()));
         }
+        let cfg = idp
+            .oidc_config
+            .as_ref()
+            .ok_or_else(|| Error::ConfigurationError("missing oidc_config".into()))?;
+        Ok(OidcIdpConfig {
+            issuer_url: cfg.issuer_url.clone(),
+        })
     }
 }
 
@@ -51,6 +62,33 @@ pub async fn decrypt_oidc_client_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardening_oidc_bridge_rejects_wrong_type_and_missing_config() {
+        let valid: IdentityProvider = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::nil(), "name": "test", "type": "oidc",
+            "oidc_config": {"issuer_url": "https://issuer.example", "client_id": "test",
+                "client_secret_encrypted": "test"}, "saml_config": null
+        }))
+        .unwrap();
+        assert_eq!(
+            OidcIdpConfig::try_from(&valid).unwrap().issuer_url,
+            "https://issuer.example"
+        );
+        let mut wrong_type = valid.clone();
+        wrong_type.idp_type = crate::models::idp::IdpType::Saml;
+        let mut missing = valid.clone();
+        missing.oidc_config = None;
+        let errors = [wrong_type, missing].map(|idp| {
+            std::panic::catch_unwind(|| OidcIdpConfig::try_from(&idp))
+                .is_ok_and(|result| matches!(result, Err(Error::ConfigurationError(_))))
+        });
+        assert_eq!(
+            errors,
+            [true, true],
+            "wrong type and missing config must return errors, not panic"
+        );
+    }
 
     async fn store_with_kek(kek: [u8; 32]) -> crate::store::Store {
         crate::store::Store::new_for_test("sqlite::memory:", kek, None)
