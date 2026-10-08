@@ -2,6 +2,12 @@
 //! live on the same resource (`/idps`), distinguished by the `type`
 //! discriminator and a matching `oidc_config` or `saml_config` sub-
 //! object.
+//!
+//! Handlers here that take an `{id}` extract it as `Path<Uuid>`. The id is
+//! interpolated into the management API path, so it must not be able to carry
+//! a `/`, `?` or `#` of its own: anything that is not a UUID is answered with
+//! 400 before the handler runs, and what goes upstream is the canonical
+//! hyphenated form.
 
 use axum::{
     Extension, Form,
@@ -11,6 +17,7 @@ use axum::{
 use sekisho_api_protocol::api_paths;
 use serde::Deserialize;
 use serde_json::Value;
+use uuid::Uuid;
 
 use super::common::{err_page, render_page};
 use crate::AppState;
@@ -67,7 +74,7 @@ pub async fn new_form(
 pub async fn edit(
     State(s): State<AppState>,
     user: Option<Extension<AuthenticatedUser>>,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
 ) -> Response {
     let u = user.as_deref();
     let item: Value = match s.client.get_json(&format!("/idps/{id}")).await {
@@ -140,7 +147,7 @@ pub async fn create(
 pub async fn update(
     State(s): State<AppState>,
     user: Option<Extension<AuthenticatedUser>>,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     Form(form): Form<IdpFormBody>,
 ) -> Response {
     let body = form_to_json(&form, false);
@@ -157,7 +164,7 @@ pub async fn update(
 pub async fn delete(
     State(s): State<AppState>,
     user: Option<Extension<AuthenticatedUser>>,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
 ) -> Response {
     match s.client.delete(&format!("/idps/{id}")).await {
         Ok(()) => Response::new(axum::body::Body::empty()),

@@ -8,6 +8,12 @@
 //! than in the generic client because different UIs (sekisho-cli,
 //! sekisho-webui, future Terraform provider) may want to sequence the
 //! pre-flight differently.
+//!
+//! Handlers here that take an `{id}` extract it as `Path<Uuid>`. The id is
+//! interpolated into the management API path, so it must not be able to carry
+//! a `/`, `?` or `#` of its own: anything that is not a UUID is answered with
+//! 400 before the handler runs, and what goes upstream is the canonical
+//! hyphenated form.
 
 use anyhow::anyhow;
 use axum::{
@@ -18,6 +24,7 @@ use axum::{
 use sekisho_api_protocol::api_paths;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use super::common::{err_page, render_html, render_page};
 
@@ -59,7 +66,7 @@ pub async fn new_form(
 pub async fn edit(
     State(s): State<AppState>,
     user: Option<Extension<AuthenticatedUser>>,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
 ) -> Response {
     let u = user.as_deref();
     let item: Value = match s.client.get_json(&format!("/routes/{id}")).await {
@@ -151,7 +158,7 @@ pub async fn create(
 pub async fn update(
     State(s): State<AppState>,
     user: Option<Extension<AuthenticatedUser>>,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     Form(form): Form<RouteFormBody>,
 ) -> Response {
     let mut body = match form_to_json(&form) {
@@ -219,7 +226,7 @@ fn null_out_removed_header_keys(patch: &mut Value, current: &Value) {
 pub async fn delete(
     State(s): State<AppState>,
     user: Option<Extension<AuthenticatedUser>>,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
 ) -> Response {
     match s.client.delete(&format!("/routes/{id}")).await {
         Ok(()) => Response::new(axum::body::Body::empty()),
@@ -234,10 +241,12 @@ pub async fn delete(
 pub async fn enable(
     State(s): State<AppState>,
     _user: Option<Extension<AuthenticatedUser>>,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
 ) -> Response {
-    if let Err(msg) = sekisho_api_protocol::ensure_cert_before_enable(&s.client, &id).await {
-        return row_error_response(&id, "cannot enable", &anyhow!(msg));
+    if let Err(msg) =
+        sekisho_api_protocol::ensure_cert_before_enable(&s.client, &id.to_string()).await
+    {
+        return row_error_response(&id.to_string(), "cannot enable", &anyhow!(msg));
     }
     match s
         .client
@@ -245,7 +254,7 @@ pub async fn enable(
         .await
     {
         Ok(v) => render_html(view::row(&v)),
-        Err(e) => row_error_response(&id, "enable failed", &e),
+        Err(e) => row_error_response(&id.to_string(), "enable failed", &e),
     }
 }
 
@@ -253,7 +262,7 @@ pub async fn enable(
 pub async fn disable(
     State(s): State<AppState>,
     _user: Option<Extension<AuthenticatedUser>>,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
 ) -> Response {
     match s
         .client
@@ -261,7 +270,7 @@ pub async fn disable(
         .await
     {
         Ok(v) => render_html(view::row(&v)),
-        Err(e) => row_error_response(&id, "disable failed", &e),
+        Err(e) => row_error_response(&id.to_string(), "disable failed", &e),
     }
 }
 
