@@ -367,7 +367,12 @@ pub async fn request_id_middleware(mut req: Request, next: Next) -> Response {
     let id = inbound_id(&req).unwrap_or_else(|| Uuid::now_v7().to_string());
     req.extensions_mut().insert(RequestId(id.clone()));
 
-    let span = tracing::info_span!("http.request", request_id = %id);
+    // `error_span`, not `info_span`: a span is filtered by level like an
+    // event, and one that is filtered out is not there to carry `request_id`
+    // for the warn and error events inside it. The level only decides
+    // whether the span exists. Its target is this module, so a filter that
+    // turns `sekishod::audit` off still removes it.
+    let span = tracing::error_span!("http.request", request_id = %id);
     let mut resp = next.run(req).instrument(span).await;
     if let Ok(value) = HeaderValue::from_str(&id) {
         resp.headers_mut()
@@ -730,6 +735,132 @@ mod tests {
                 .any(|span| { span["name"] == "http.request" && span["request_id"] == id }),
             "handler event must carry request_id in the JSON span list: {line}"
         );
+    }
+
+    #[tokio::test]
+    async fn request_id_survives_production_log_level_filters() {
+        if run_isolated_request_id_test(
+            "audit::tests::request_id_survives_production_log_level_filters",
+        ) {
+            return;
+        }
+        use tower::ServiceExt;
+
+        let supplied = "0190e5e5-3a8b-7c01-9d4f-12345678abcd";
+        for filter in [
+            "info",
+            "warn",
+            "error",
+            "debug",
+            "sekishod::auth=debug,warn",
+            "sekishod=info,sekishod::audit=info",
+            "sekishod::auth=debug,info",
+        ] {
+            let buffer = JsonLogBuffer::default();
+            let writer = buffer.clone();
+            let guard = tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+                .json()
+                .with_current_span(false)
+                .with_span_list(true)
+                .with_writer(move || writer.clone())
+                .finish()
+                .set_default();
+            let app = axum::Router::new()
+                .route(
+                    "/",
+                    axum::routing::get(|| async {
+                        assert_eq!(
+                            tracing::Span::current().metadata().unwrap().target(),
+                            "sekishod::audit"
+                        );
+                        tracing::warn!(target: "sekishod::auth", "request-id warn marker");
+                        tracing::error!(target: "sekishod::auth", "request-id error marker");
+                        "ok"
+                    }),
+                )
+                .layer(axum::middleware::from_fn(request_id_middleware));
+            let response = app.oneshot(req_with(Some(supplied))).await.unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(response.headers()[REQUEST_ID_HEADER], supplied);
+            assert_handler_json_request_id(&buffer, "message", "request-id error marker", supplied);
+            if filter != "error" {
+                assert_handler_json_request_id(
+                    &buffer,
+                    "message",
+                    "request-id warn marker",
+                    supplied,
+                );
+            }
+            let bytes = buffer.0.lock().unwrap();
+            let lines: Vec<_> = bytes
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice::<serde_json::Value>(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), if filter == "error" { 1 } else { 2 });
+            assert!(
+                lines.iter().all(|line| {
+                    matches!(
+                        line["fields"]["message"].as_str(),
+                        Some("request-id warn marker" | "request-id error marker")
+                    )
+                }),
+                "creating/entering/dropping a span must not emit a log line"
+            );
+            drop(bytes);
+            drop(guard);
+        }
+    }
+
+    #[tokio::test]
+    async fn request_id_target_opt_out_removes_json_span_context() {
+        if run_isolated_request_id_test(
+            "audit::tests::request_id_target_opt_out_removes_json_span_context",
+        ) {
+            return;
+        }
+        use tower::ServiceExt;
+
+        let filter = "warn,sekishod::audit=off";
+        {
+            let buffer = JsonLogBuffer::default();
+            let writer = buffer.clone();
+            let _guard = tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+                .json()
+                .with_current_span(false)
+                .with_span_list(true)
+                .with_writer(move || writer.clone())
+                .finish()
+                .set_default();
+            let app = axum::Router::new()
+                .route(
+                    "/",
+                    axum::routing::get(|| async {
+                        tracing::warn!(target: "sekishod::auth", "request-id opt-out marker");
+                        "ok"
+                    }),
+                )
+                .layer(axum::middleware::from_fn(request_id_middleware));
+            let supplied = "0190e5e5-3a8b-7c01-9d4f-12345678abcd";
+            let response = app.oneshot(req_with(Some(supplied))).await.unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(response.headers()[REQUEST_ID_HEADER], supplied);
+            let bytes = buffer.0.lock().unwrap();
+            let lines: Vec<_> = bytes
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice::<serde_json::Value>(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0]["fields"]["message"], "request-id opt-out marker");
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains(supplied),
+                "explicit span opt-out {filter} removes JSON correlation context: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
     }
 
     /// The real management and proxy routers, so the middleware is exercised
