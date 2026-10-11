@@ -81,6 +81,12 @@ sudo journalctl -u sekishod --since today
 sudo journalctl -u sekishod -p warning   # warnings and above
 ```
 
+Log lines written within the request-handler span carry its `request_id`
+under `spans` in JSON output. Lines outside it, such as connection-acceptance
+and TLS handshake messages, do not carry that context.
+The request span's target is `sekishod::audit`; turning off this target in
+`RUST_LOG` also removes that request-id context.
+
 The packaged `sekisho-webui.service` is independent of the daemon because the
 Web UI can manage a remote Sekisho host. If this host instead uses Web UI
 `local_auth`, add the following with

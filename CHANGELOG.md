@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Include the request id in log lines written within the request-handler
+  span. In JSON output it appears under `spans`. Log lines written outside
+  it, such as connection-acceptance and TLS handshake messages, do not carry
+  it, and a `RUST_LOG` filter that turns off the `sekishod::audit` target
+  removes it.
+
 ### Removed
 
 - Remove the `sekisho-cli` `export` and `import` commands from both operational
@@ -23,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   [Operating → Overview § Backups](https://naoto256.github.io/sekisho/docs/operating/day-to-day.html#backups)
   instead.
   The separately documented YAML policy import never existed.
+
 
 ## [0.1.1] - 2026-10-04
 
