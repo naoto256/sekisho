@@ -389,5 +389,6 @@ error. Unquoted values retain the usual `true` / `false` / `null` /
 integer conversion; an expression starting with `claim.` remains a
 string, including any quotes within it.
 
-`edit-expr` opens the pending value in an editor instead, which is
-easier for anything spanning more than a line.
+`edit-expr` opens the pending expression, otherwise the existing resource's
+saved expression, or an empty buffer for a new resource. An editor is easier
+for anything spanning more than a line.
