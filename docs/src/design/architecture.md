@@ -302,8 +302,10 @@ a TEXT column:
   override.
 - **Handoff tokens**: ChaCha20-Poly1305 sealed with the master key,
   60 s TTL, single-use via a nonce store, bound to the target host.
-- **Redirects**: only hostnames that match a registered route are
-  accepted (open-redirect protection).
+- **Login redirects**: `safe_redirect` accepts root-relative paths or HTTPS
+  URLs whose host matches a registered route; raw backslash, TAB, CR and LF
+  are rejected before either check, with `/` as the fallback. This is separate
+  from the HTTP listener's host-based redirect admission.
 - **Referrer-Policy**: `no-referrer` on every auth redirect so code /
   state / handoff tokens do not leak via `Referer`.
 

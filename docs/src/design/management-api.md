@@ -197,6 +197,8 @@ success status. This section is the first; the next is the second.
 The shell has no equivalent, so this is the way to pre-mint a
 certificate that no route will trigger, the auth-domain certificate
 being the usual case.
+Both issue and upload requests reject unknown fields with
+`422 Unprocessable Entity` rather than silently ignoring them.
 
 ```bash
 curl -X POST \

@@ -48,6 +48,9 @@ The IdP's redirect URI must be `https://<auth_domain>/.sekisho/callback`.
 | `name_id_format`    | string or null   | Override the requested NameID format.                                                  |
 | `attribute_mapping` | map[string]string or null per entry | Map IdP attribute names to internal claim names (e.g. `groups`, `email`). On update, an entry whose value is `null` is **deleted** from the mapping; see [Update semantics](#update-semantics). |
 
+Set `metadata_url` to the final metadata URL: the SAML client does not follow
+HTTP redirects.
+
 The SP entity ID and ACS URL are not configurable per-IdP — the
 daemon always uses `https://<auth_domain>` and
 `https://<auth_domain>/.sekisho/saml/acs`. Match these on the IdP
