@@ -94,6 +94,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Web UI guard configuration and the identity-provider form.
 - Create the `sekisho-cli` `edit-expr` temporary file exclusively, with a
   randomized name and, on Unix, mode `0600`.
+- On Unix, `edit-expr` checks the edited file before reading it back and
+  rejects symlinks, non-regular files, files owned by another user and files
+  whose mode is not `0600`. Editors may still replace it by renaming a
+  regular, same-owner `0600` file over it. Other platforms do not perform
+  these readback checks.
 
 ## [0.1.1] - 2026-10-04
 
