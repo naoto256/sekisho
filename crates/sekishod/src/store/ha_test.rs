@@ -5664,15 +5664,34 @@ mod tests {
         }
 
         let mut checks = BTreeSet::new();
+        let mut not_null_checks = BTreeSet::new();
+        // `information_schema.check_constraints` is not used here: in the plan
+        // observed on PG16 it deparses the CHECK text of other schemas as
+        // well, which can fail when one of their tables is dropped
+        // concurrently. The MATERIALIZED CTE fixes this schema's constraint
+        // OIDs first, and `pg_get_constraintdef` is applied to those rows
+        // only. `substring(.. from 7)` drops the leading `CHECK `. The second
+        // branch adds one `<column> IS NOT NULL` row per non-nullable column,
+        // the form the loop below parses.
         for row in sqlx::query(
-            r#"SELECT tc.table_name, cc.check_clause
-               FROM information_schema.table_constraints tc
-               JOIN information_schema.check_constraints cc
-                 ON tc.constraint_catalog = cc.constraint_catalog
-                AND tc.constraint_schema = cc.constraint_schema
-                AND tc.constraint_name = cc.constraint_name
-               WHERE tc.table_schema = current_schema()
-                 AND tc.constraint_type = 'CHECK'"#,
+            r#"WITH own_checks AS MATERIALIZED (
+                   SELECT con.oid, c.relname::TEXT AS table_name
+                   FROM pg_constraint con
+                   JOIN pg_class c ON c.oid = con.conrelid
+                   JOIN pg_namespace n ON n.oid = c.relnamespace
+                   WHERE n.nspname = current_schema() AND con.contype = 'c'
+                     AND c.relkind IN ('r', 'p')
+               )
+               SELECT table_name, substring(pg_get_constraintdef(oid) from 7) AS check_clause
+               FROM own_checks
+               UNION ALL
+               SELECT c.relname::TEXT, a.attname || ' IS NOT NULL'
+               FROM pg_attribute a
+               JOIN pg_class c ON c.oid = a.attrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = current_schema() AND a.attnum > 0
+                 AND NOT a.attisdropped AND a.attnotnull
+                 AND c.relkind IN ('r', 'p')"#,
         )
         .fetch_all(pool)
         .await
@@ -5694,10 +5713,23 @@ mod tests {
                     }),
                     "Postgres exposed an unmatched NOT NULL check on {table}.{column}"
                 );
+                not_null_checks.insert((table, column.to_owned()));
             } else {
                 panic!("unapproved Postgres CHECK on {table}: {clause}");
             }
         }
+
+        // Missing NOT NULL rows would silently shrink the checks being compared.
+        // Match every non-nullable column, not just the rows the query returned.
+        let non_nullable_columns: BTreeSet<_> = columns
+            .iter()
+            .filter(|column| !column.nullable)
+            .map(|column| (column.table.clone(), column.name.clone()))
+            .collect();
+        assert_eq!(
+            not_null_checks, non_nullable_columns,
+            "Postgres NOT NULL checks differ from non-nullable columns"
+        );
 
         LogicalSchema {
             tables,
