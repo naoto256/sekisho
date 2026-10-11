@@ -11,13 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The certificate issue and upload requests reject unknown fields with
+  `422 Unprocessable Entity` instead of ignoring them.
+- The Web UI answers `/healthz` without credentials, so a health probe works
+  when basic auth or JWT is configured. The endpoint reports only that the
+  Web UI process is serving.
+- The Web UI refuses `POST /setup` once an API key is installed. A successful
+  submission could previously replace the installed key.
+- The Web UI accepts only UUIDs as route, identity-provider and certificate
+  ids in its URLs and answers `400 Bad Request` for anything else.
+- Fetching SAML metadata no longer follows HTTP redirects. If an identity
+  provider's `metadata_url` redirects, configure the final URL.
+
 ### Fixed
 
+- Keep the TLS listeners accepting connections after an accept error. A
+  single error, such as reaching the file descriptor limit, previously stopped
+  the listener until the daemon was restarted. TLS handshakes now have a
+  10 second deadline and HTTP/1 request headers a 30 second deadline; an
+  HTTP/2 connection that sends nothing is not covered.
 - Include the request id in log lines written within the request-handler
   span. In JSON output it appears under `spans`. Log lines written outside
   it, such as connection-acceptance and TLS handshake messages, do not carry
   it, and a `RUST_LOG` filter that turns off the `sekishod::audit` target
   removes it.
+- Return a configuration error instead of panicking when an identity
+  provider's type and stored configuration disagree.
 
 ### Removed
 
@@ -32,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   instead.
   The separately documented YAML policy import never existed.
 
+### Security
+
+- Reject login redirect targets that contain a backslash, tab, carriage
+  return or line feed.
+- Log only the length of ACME HTTP-01 challenge tokens.
+- Keep secrets out of the `Debug` output of the pending-login state, the
+  Web UI guard configuration and the identity-provider form.
 
 ## [0.1.1] - 2026-10-04
 

@@ -40,14 +40,16 @@ operational task rather than a security review, so it lives in
   The cookie is scoped with `Secure`, `HttpOnly`, and `SameSite=Lax`.
 - **WebUI guard and response headers**: when the Basic guard is
   configured, it rejects missing or invalid credentials before
-  handlers run. WebUI responses include CSP, HSTS,
+  guarded handlers run. `/healthz` and bundled assets are outside the guard
+  but retain the security headers. WebUI responses include CSP, HSTS,
   `X-Content-Type-Options`,
   `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy`.
   These statements describe the WebUI surface, not daemon proxy or
   management responses.
 - **PKCE** on OIDC.
-- **Open-redirect protection**: `safe_redirect` allows only hostnames
-  that match a registered route.
+- **Open-redirect protection**: `safe_redirect` accepts root-relative paths
+  or HTTPS URLs whose host matches a registered route. Before either check,
+  raw backslash, TAB, CR or LF is rejected; a rejected target falls back to `/`.
 - **Secret encryption at rest**: current writes use the active DEK
   with XChaCha20-Poly1305. The operator-provisioned KEK wraps the DEK
   ring; it is supplied through an operator-managed credential file and never

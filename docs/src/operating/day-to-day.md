@@ -182,6 +182,10 @@ per-instance config state.
 
 ## Health and metrics
 
+The Web UI's `GET /healthz` on port `9444` returns `200` without credentials.
+It checks only that the Web UI process responds, not daemon or credential state;
+the daemon probes below are separate.
+
 | Endpoint                   | Auth      | Returns                                |
 |----------------------------|-----------|----------------------------------------|
 | `GET /health`              | none      | `{"status":"ok"}` as long as the daemon is listening. Suitable for a liveness probe. |

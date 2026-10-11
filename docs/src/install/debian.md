@@ -69,6 +69,8 @@ default and changed to `root:sekisho` mode `0640`; its contents are not
 rewritten. Other existing owner, group, and mode combinations remain
 operator-managed and unchanged. An API key entered through the setup form
 stays in process memory instead of being written to this file.
+Setup registers the first credential; once one is configured, `POST /setup`
+redirects without probing the submitted key or replacing the installed one.
 
 The Web UI can instead manage a remote daemon. Before enabling its service,
 set `sekisho_api_url` and `management_rpk_pin`, remove the `local_auth` block,

@@ -95,6 +95,9 @@ However you reach it the first time, the WebUI has no credential of its own
 and asks for a management API key before it will show anything else. The key
 is held in process memory only, so a restart returns to this screen:
 
+Setup registers the first credential; a configured `POST /setup` redirects
+without probing the submitted key or replacing the installed one.
+
 ![The WebUI first-run screen, asking for a Sekisho management API key](../assets/webui-setup.png)
 
 Compose grants the read-only master-key secret only to `sekishod` and passes

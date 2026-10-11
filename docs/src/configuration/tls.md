@@ -5,6 +5,10 @@ directory (Let's Encrypt by default) using the HTTP-01 challenge,
 stored in the SQLite database with their private keys encrypted at
 rest, and renewed automatically before expiry.
 
+The proxy and management TLS listeners impose a 10 second TLS handshake
+deadline and a 30 second HTTP/1 request-header deadline. An HTTP/2 connection
+that sends nothing is not covered by the request-header deadline.
+
 ## How TLS termination works
 
 - The proxy listener (default `0.0.0.0:443`) terminates TLS.
