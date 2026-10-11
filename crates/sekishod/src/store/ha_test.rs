@@ -5527,6 +5527,24 @@ mod tests {
         }
     }
 
+    /// Name for one of the two `identity_signing_keys` CHECKs, matched on the
+    /// exact text Postgres deparses for it. Any other input panics: these
+    /// checks are compared with the SQLite side by name, so a near match must
+    /// not be folded into the same name.
+    fn canonical_postgres_identity_check(table: &str, raw: &str) -> String {
+        match (table, raw) {
+            (
+                "identity_signing_keys",
+                "((state = ANY (ARRAY['current'::text, 'retiring'::text])))",
+            ) => "identity-key-state".to_owned(),
+            (
+                "identity_signing_keys",
+                "((((state = 'current'::text) AND (private_key_encrypted IS NOT NULL) AND (retire_until IS NULL)) OR ((state = 'retiring'::text) AND (private_key_encrypted IS NULL) AND (retire_until IS NOT NULL))))",
+            ) => "identity-private-material-state".to_owned(),
+            _ => panic!("unapproved Postgres CHECK on {table}: {raw}"),
+        }
+    }
+
     async fn postgres_logical_schema(pool: &PgPool) -> LogicalSchema {
         let tables: BTreeSet<String> = sqlx::query_scalar(
             "SELECT table_name FROM information_schema.tables \
@@ -5706,6 +5724,12 @@ mod tests {
                 .collect::<String>();
             if compact == "id=1" {
                 checks.insert((table, "id=1".to_owned()));
+            } else if table == "identity_signing_keys" && clause.starts_with("((") {
+                // Tested ahead of the NOT NULL branch: the compound check also
+                // ends in `IS NOT NULL`. The synthesized per-column rows do
+                // not start with `((`, so they still reach that branch.
+                let check = canonical_postgres_identity_check(&table, &clause);
+                checks.insert((table, check));
             } else if let Some(column) = compact.strip_suffix("isnotnull") {
                 assert!(
                     columns.iter().any(|entry| {
@@ -5741,6 +5765,25 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_and_postgres_service_catalogs_have_logical_parity() {
+        fn with_postgres_upgrade_api_key_positions(mut schema: LogicalSchema) -> LogicalSchema {
+            // Postgres adds scopes at the end with ADD COLUMN; SQLite rebuilds
+            // api_keys in the fresh schema's order during the scopes migration.
+            schema.columns = schema
+                .columns
+                .into_iter()
+                .map(|mut column| {
+                    column.position = match (column.table.as_str(), column.name.as_str()) {
+                        ("api_keys", "created_at") => 5,
+                        ("api_keys", "last_used_at") => 6,
+                        ("api_keys", "scopes") => 7,
+                        _ => column.position,
+                    };
+                    column
+                })
+                .collect();
+            schema
+        }
+
         let Some(fresh_postgres) = PgMigrationFixture::new().await else {
             return;
         };
@@ -5814,11 +5857,13 @@ mod tests {
             "upgraded SQLite catalog differs from frozen service schema"
         );
         assert_eq!(
-            upgraded_postgres_schema, expected,
+            upgraded_postgres_schema,
+            with_postgres_upgrade_api_key_positions(expected.clone()),
             "upgraded Postgres catalog differs from frozen service schema"
         );
         assert_eq!(
-            upgraded_sqlite_schema, upgraded_postgres_schema,
+            with_postgres_upgrade_api_key_positions(upgraded_sqlite_schema),
+            upgraded_postgres_schema,
             "upgraded service catalogs differ across dialects"
         );
 
@@ -5868,6 +5913,54 @@ mod tests {
 
     #[test]
     fn catalog_normalization_rejects_unapproved_dialect_drift() {
+        let state_check = "((state = ANY (ARRAY['current'::text, 'retiring'::text])))";
+        let material_check = "((((state = 'current'::text) AND (private_key_encrypted IS NOT NULL) AND (retire_until IS NULL)) OR ((state = 'retiring'::text) AND (private_key_encrypted IS NULL) AND (retire_until IS NOT NULL))))";
+        assert_eq!(
+            canonical_postgres_identity_check("identity_signing_keys", state_check),
+            "identity-key-state"
+        );
+        assert_eq!(
+            canonical_postgres_identity_check("identity_signing_keys", material_check),
+            "identity-private-material-state"
+        );
+        for clause in [
+            state_check.replace("'retiring'", "'retired'"),
+            state_check.replace(
+                "'current'::text, 'retiring'::text",
+                "'retiring'::text, 'current'::text",
+            ),
+            state_check.replace("'retiring'::text", "'retiring'::text, 'retired'::text"),
+            state_check.replace("'current'", "'CURRENT'"),
+            state_check.replace("'current'", "'current '"),
+            material_check.replace("'retiring'", "'retired'"),
+            material_check.replace(" AND (retire_until IS NULL)", ""),
+            material_check.replace(
+                "private_key_encrypted IS NULL",
+                "private_key_encrypted IS NOT NULL",
+            ),
+            material_check.replace("retire_until", "created_at"),
+            material_check.replace(
+                " AND (retire_until IS NOT NULL)",
+                " AND (retire_until IS NOT NULL) AND (created_at IS NOT NULL)",
+            ),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| {
+                    canonical_postgres_identity_check("identity_signing_keys", &clause)
+                })
+                .is_err(),
+                "identity signing CHECK drift was accepted: {clause}"
+            );
+        }
+        for clause in [state_check, material_check] {
+            assert!(
+                std::panic::catch_unwind(|| {
+                    canonical_postgres_identity_check("routes", clause)
+                })
+                .is_err(),
+                "identity signing CHECK on another table was accepted"
+            );
+        }
         assert!(
             std::panic::catch_unwind(|| {
                 logical_data_type(CatalogDialect::Postgres, "routes", "id", "text")
