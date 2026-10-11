@@ -90,16 +90,23 @@ pub struct AuthenticatedUser {
     pub groups: Vec<String>,
 }
 
-/// Decoded JWT claims — shared shape for local and remote verification
-/// paths; kept private to the guard module hierarchy.
+/// Claims decoded from a verified `X-Sekisho-Jwt`; kept private to the guard
+/// module hierarchy.
+///
+/// `email`, `groups` and `iat` are required by this type: with no
+/// `#[serde(default)]`, a token that omits one, sends `null`, or sends the
+/// wrong JSON type fails to decode. Presence and type are all that is checked
+/// for them — an empty `email` or `groups` decodes, and the value of `iat` is
+/// never read, hence the field name `_iat`. They are required here because
+/// `Validation::required_spec_claims` cannot do it; see `jwt::verify_local`.
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)] // `aud`/`iss` surface for future logging or per-claim policy.
 pub(crate) struct IdentityClaims {
     pub sub: String,
-    #[serde(default)]
     pub email: String,
-    #[serde(default)]
     pub groups: Vec<String>,
+    #[serde(rename = "iat")]
+    pub _iat: i64,
     #[serde(default)]
     pub aud: Option<String>,
     #[serde(default)]

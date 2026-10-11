@@ -55,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Reject identity JWTs in the Web UI guard when `email`, `groups` or `iat`
+  is missing, null or has the wrong type. Empty email strings and empty
+  group arrays remain accepted.
 - Reject login redirect targets that contain a backslash, tab, carriage
   return or line feed.
 - Log only the length of ACME HTTP-01 challenge tokens.
