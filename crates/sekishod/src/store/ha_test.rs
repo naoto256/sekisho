@@ -3208,10 +3208,22 @@ mod tests {
         fixture.close().await;
     }
 
+    /// Cancels the first-DEK bootstrap after its INSERT has run inside the
+    /// transaction and before the key-ring version is bumped or anything is
+    /// committed, then checks that the insert was rolled back and that
+    /// another writer can perform the bootstrap.
+    ///
+    /// The pause is an AFTER INSERT trigger on `master_keys` that waits on an
+    /// advisory lock the test already holds. The trigger raises unless the
+    /// new row is visible inside the inserting transaction and the version is
+    /// still 0, so a backend waiting on that lock is at the intended point.
     #[tokio::test]
     async fn postgres_cancelled_first_dek_bootstrap_rolls_back_before_reuse() {
-        let application_name = "sekisho_first_dek_cancel";
-        let Some(fixture) = PgBootstrapFixture::new(application_name).await else {
+        // Unique per fixture: the wait below picks the bootstrap backend out
+        // of `pg_stat_activity`, which lists every backend on the server, by
+        // this name.
+        let application_name = format!("sekisho_first_dek_cancel_{}", unique_schema());
+        let Some(fixture) = PgBootstrapFixture::new(&application_name).await else {
             return;
         };
         eprintln!("postgres first-DEK cancellation gate exercised");
@@ -3219,11 +3231,39 @@ mod tests {
             .await
             .expect("cancellation fixture pool must connect");
         let mut blocker = raw.begin().await.unwrap();
+        let advisory_key = unique_advisory_key();
+        let blocker_pid = sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()")
+            .fetch_one(&mut *blocker)
+            .await
+            .unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(advisory_key)
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+        sqlx::query(&format!(
+            "CREATE FUNCTION pause_first_dek_after_insert() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN \
+               IF NOT EXISTS (SELECT 1 FROM master_keys WHERE key_id = NEW.key_id) THEN \
+                 RAISE EXCEPTION 'first-DEK row must exist inside the inserting transaction'; \
+               END IF; \
+               IF (SELECT version FROM schema_versions WHERE resource = 'key_ring') \
+                    IS DISTINCT FROM 0 THEN \
+                 RAISE EXCEPTION 'first-DEK version must not be bumped before the barrier'; \
+               END IF; \
+               PERFORM pg_advisory_xact_lock({advisory_key}); \
+               RETURN NEW; \
+             END $$",
+        ))
+        .execute(&raw)
+        .await
+        .unwrap();
         sqlx::query(
-            "SELECT version FROM schema_versions \
-             WHERE resource = 'key_ring' FOR UPDATE",
+            "CREATE TRIGGER pause_first_dek_after_insert \
+             AFTER INSERT ON master_keys FOR EACH ROW \
+             EXECUTE FUNCTION pause_first_dek_after_insert()",
         )
-        .execute(&mut *blocker)
+        .execute(&raw)
         .await
         .unwrap();
 
@@ -3234,33 +3274,106 @@ mod tests {
                 .master_keys_insert_first_active_if_empty(&blob)
                 .await
         });
-        tokio::time::timeout(Duration::from_secs(5), async {
+        // Wait for a backend with this application name that is blocked on an
+        // advisory lock held by `blocker` while running the bootstrap INSERT.
+        // The bound text has to equal the statement the Postgres backend
+        // sends, or nothing matches and the wait times out.
+        let bootstrap_pid = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                let waiting = sqlx::query_scalar::<_, bool>(
-                    "SELECT EXISTS ( \
-                       SELECT 1 FROM pg_stat_activity \
+                let waiting = sqlx::query_scalar::<_, i32>(
+                    "SELECT pid FROM pg_stat_activity \
                        WHERE application_name = $1 \
                          AND wait_event_type = 'Lock' \
-                         AND query LIKE 'UPDATE schema_versions%' \
+                         AND wait_event = 'advisory' \
+                         AND query = $2 \
+                         AND $3 = ANY (pg_blocking_pids(pid))",
+                )
+                .bind(&application_name)
+                .bind(
+                    "INSERT INTO master_keys (key_id, key_encrypted, active, retired) \
+                     SELECT 0, $1, true, false \
+                     WHERE NOT EXISTS (SELECT 1 FROM master_keys) \
+                     ON CONFLICT DO NOTHING \
+                     RETURNING key_id",
+                )
+                .bind(blocker_pid)
+                .fetch_optional(&raw)
+                .await
+                .unwrap();
+                if let Some(pid) = waiting {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("bootstrap must reach the post-insert, pre-bump advisory barrier");
+        eprintln!("postgres first-DEK post-insert trigger checks reached");
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM master_keys")
+                .fetch_one(&raw)
+                .await
+                .unwrap(),
+            0,
+            "the inserted first-DEK row must not be visible to another session before commit"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT version FROM schema_versions WHERE resource = 'key_ring'",
+            )
+            .fetch_one(&raw)
+            .await
+            .unwrap(),
+            0
+        );
+        eprintln!("postgres first-DEK uncommitted row hidden from observer");
+
+        // Cancel while the server is still inside the INSERT, and only then
+        // release the barrier.
+        task.abort();
+        let join_error = task.await.expect_err("bootstrap task must be cancelled");
+        assert!(join_error.is_cancelled());
+        eprintln!("postgres first-DEK bootstrap task cancellation observed");
+        blocker.rollback().await.unwrap();
+
+        // Until the bootstrap backend has either gone away or is idle with no
+        // transaction open.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let ended = sqlx::query_scalar::<_, bool>(
+                    "SELECT NOT EXISTS ( \
+                       SELECT 1 FROM pg_stat_activity WHERE pid = $1 \
+                         AND NOT (xact_start IS NULL AND state = 'idle') \
                      )",
                 )
-                .bind(application_name)
+                .bind(bootstrap_pid)
                 .fetch_one(&raw)
                 .await
                 .unwrap();
-                if waiting {
+                if ended {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("bootstrap must reach the blocked version bump");
-
-        task.abort();
-        let join_error = task.await.expect_err("bootstrap task must be cancelled");
-        assert!(join_error.is_cancelled());
-        blocker.rollback().await.unwrap();
+        .expect("cancelled bootstrap transaction must end before state checks");
+        let mut observer = raw.begin().await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT version FROM schema_versions WHERE resource = 'key_ring' FOR UPDATE",
+                )
+                .fetch_one(&mut *observer),
+            )
+            .await
+            .expect("cancelled bootstrap must release the key-ring row lock")
+            .unwrap(),
+            0
+        );
+        observer.rollback().await.unwrap();
 
         assert_eq!(
             tokio::time::timeout(
@@ -3273,6 +3386,16 @@ mod tests {
             0
         );
         assert_eq!(fixture.a.key_ring_version_current().await.unwrap(), 0);
+        eprintln!("postgres first-DEK inserted row rollback and pre-bump version observed");
+        // Remove the barrier so the next writer takes the unmodified path.
+        sqlx::query("DROP TRIGGER pause_first_dek_after_insert ON master_keys")
+            .execute(&raw)
+            .await
+            .unwrap();
+        sqlx::query("DROP FUNCTION pause_first_dek_after_insert()")
+            .execute(&raw)
+            .await
+            .unwrap();
         assert_eq!(
             tokio::time::timeout(
                 Duration::from_secs(5),
@@ -3285,6 +3408,7 @@ mod tests {
             .unwrap(),
             FirstDekInsertOutcome::Inserted
         );
+        eprintln!("postgres first-DEK next writer succeeded after cancellation");
         raw.close().await;
         fixture.close().await;
     }
