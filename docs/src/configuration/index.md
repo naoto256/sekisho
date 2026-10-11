@@ -1,13 +1,14 @@
 # Configuration
 
-Sekisho has no configuration files. Every runtime setting lives in a
-database. You change it from a terminal with the `sekisho-cli` shell,
-or in a browser with the web UI that `sekisho-webui` serves.
+Sekisho's database-managed runtime settings are changed from a terminal
+with the `sekisho-cli` shell, or in a browser with the web UI that
+`sekisho-webui` serves. Logging is process startup configuration instead:
+use `--log-level`, `SEKISHO_LOG_LEVEL` or `RUST_LOG` and restart the daemon.
 
 Two databases are involved. Node-local settings — bind addresses above all —
-live in a per-instance SQLite file that every node always has. Everything
-else lives in the cluster database, which is that same SQLite file in the
-single-node default and a shared PostgreSQL in HA. See
+live in a per-instance SQLite file that every node always has. The remaining
+database-managed settings live in the cluster database, that same SQLite
+file in the single-node default and a shared PostgreSQL in HA. See
 [Per-instance settings](./instance.md).
 
 There are five top-level configuration objects:
@@ -30,7 +31,7 @@ not authored by hand: **sessions**, **certificates**, and
 
 ## Changing things
 
-Everything on this page is edited with `sekisho-cli` or the web UI, and
+The database-managed objects on this page are edited with `sekisho-cli` or the web UI, and
 both are covered where each object is described. Neither needs you to
 know anything about HTTP.
 

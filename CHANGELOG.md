@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `PATCH /config` treats `null` for `default_idp_id`, `auth_domain` and
+  `acme_email` as "clear this value"; an absent field still means "leave it
+  unchanged". The Web UI sends `null` when one of these fields is left empty,
+  so clearing the default identity provider under **General** now takes
+  effect. A client that sent an explicit `null` for one of them and expected
+  no change must omit the field instead.
 - The certificate issue and upload requests reject unknown fields with
   `422 Unprocessable Entity` instead of ignoring them.
 - The Web UI answers `/healthz` without credentials, so a health probe works
@@ -52,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   [Operating → Overview § Backups](https://naoto256.github.io/sekisho/docs/operating/day-to-day.html#backups)
   instead.
   The separately documented YAML policy import never existed.
+- Remove `log_level` from the global configuration, the Web UI and
+  `sekisho-cli`. The value was stored but never applied. Set the log level
+  with `--log-level`, `SEKISHO_LOG_LEVEL` or `RUST_LOG` and restart the daemon.
+  A `log_level` field sent to `PATCH /config` is ignored like any other
+  unknown field; the request is otherwise processed as usual.
+  In an HA deployment, do not change the global configuration while 0.1.1
+  and 0.1.2 nodes run side by side: once a 0.1.2 node has written the
+  configuration, a 0.1.1 node can no longer read it.
 
 ### Security
 

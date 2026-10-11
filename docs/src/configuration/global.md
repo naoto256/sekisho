@@ -8,6 +8,10 @@ listen addresses — live elsewhere (see
 
 ## Fields
 
+For `default_idp_id`, `auth_domain` and `acme_email`, `PATCH /config` preserves
+an omitted field, clears it on `null`, and sets a supplied value. Clearing
+`auth_domain` requires a daemon restart.
+
 | Field                     | Type             | Default                                              | Notes                                              |
 |---------------------------|------------------|------------------------------------------------------|----------------------------------------------------|
 | `auth_domain`             | string or null   | null                                                 | Hostname for `/.sekisho/...` endpoints.             |
