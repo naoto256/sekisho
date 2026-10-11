@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Compute `PATCH /config`'s `_restart_required` from stored values before
+  and after the update, rather than which fields were sent. Sending an
+  unchanged restart-sensitive value no longer triggers the marker.
 - Keep the TLS listeners accepting connections after an accept error. A
   single error, such as reaching the file descriptor limit, previously stopped
   the listener until the daemon was restarted. TLS handshakes now have a
