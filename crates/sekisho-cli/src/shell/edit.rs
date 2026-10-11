@@ -167,75 +167,183 @@ pub(super) fn cmd_top(edit_ctx: &mut Option<EditContext>) {
     }
 }
 
-/// The scratch file `edit-expr` hands to the external editor. Removed on
-/// drop, including when writing the initial text fails.
-struct ExprTempFile {
-    path: std::path::PathBuf,
-}
+/// The scratch file `edit-expr` hands to the external editor, and the checks
+/// made before what comes back is used.
+///
+/// The editor is a separate program that is given a path in the temp
+/// directory, so the result is not read by simply reopening that path. On
+/// Unix the read-back refuses a path that has become a symlink, that names
+/// something other than a regular file, a file owned by another user, or one
+/// whose permission bits are not exactly 0600. It does not cover a process
+/// running as the same user changing the text, the parent directory being
+/// replaced, or non-Unix platforms, where the path is read back as is.
+mod secure_edit_temp {
+    use std::io::{self, Write};
+    use std::path::Path;
+    use tempfile::{Builder, TempPath};
+    #[cfg(unix)]
+    use {
+        std::fs::{File, Metadata, OpenOptions},
+        std::io::{Read, Seek, SeekFrom},
+        std::os::unix::fs::{MetadataExt, OpenOptionsExt},
+    };
 
-impl ExprTempFile {
-    /// Create it in the system temp directory with a name suffix drawn from
-    /// std's randomly keyed hasher. The suffix only has to make collisions
-    /// unlikely: what keeps this from writing through someone else's file or
-    /// symlink is the exclusive create in [`Self::create_at`], not the name.
-    fn create(initial: &str) -> std::io::Result<Self> {
-        use std::hash::BuildHasher;
-        Self::create_in(&std::env::temp_dir(), initial, || {
-            std::collections::hash_map::RandomState::new().hash_one(std::process::id())
+    #[cfg(unix)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct FileIdentity {
+        device: u64,
+        inode: u64,
+    }
+
+    /// Removed when dropped, on a best-effort basis. On Unix the descriptor
+    /// the file was created with stays open: the edited text is read from it
+    /// when the editor wrote in place, and while it is open the inode cannot
+    /// be reused, which is what makes comparing identities meaningful.
+    pub(super) struct SecureEditTemp {
+        #[cfg(unix)]
+        file: File,
+        path: TempPath,
+        #[cfg(unix)]
+        identity: FileIdentity,
+    }
+
+    impl SecureEditTemp {
+        /// Create the file and write the initial text. On Unix the new file
+        /// has to pass the same checks as the read-back, so a umask that
+        /// removes an owner permission bit fails here.
+        pub(super) fn create(initial: &[u8]) -> io::Result<Self> {
+            let mut named = Builder::new()
+                .prefix("sekisho-cli-")
+                .suffix(".expr")
+                .tempfile()?;
+            #[cfg(unix)]
+            let identity = validate_metadata(&named.as_file().metadata()?)?;
+            named.as_file_mut().write_all(initial)?;
+            named.as_file_mut().flush()?;
+            let (file, path) = named.into_parts();
+            #[cfg(not(unix))]
+            drop(file);
+            Ok(Self {
+                #[cfg(unix)]
+                file,
+                path,
+                #[cfg(unix)]
+                identity,
+            })
+        }
+
+        pub(super) fn path(&self) -> &Path {
+            &self.path
+        }
+
+        /// No checks on these platforms: the path is read back as is. This
+        /// branch is not exercised by the project's builds or tests.
+        #[cfg(not(unix))]
+        pub(super) fn read_to_string(self) -> io::Result<String> {
+            std::fs::read_to_string(&self.path)
+        }
+
+        /// Read the text back after the editor has exited. If the path still
+        /// names the file `create` made, it is read from the descriptor kept
+        /// since then. Otherwise a different file is at the path, as after
+        /// an editor that saves by rename; it is opened without following a
+        /// symlink, checked through its descriptor, and read from that
+        /// descriptor.
+        #[cfg(unix)]
+        pub(super) fn read_to_string(self) -> io::Result<String> {
+            let Self {
+                mut file,
+                path,
+                identity,
+            } = self;
+            let path_metadata = std::fs::symlink_metadata(&path)?;
+            let path_identity = validate_metadata(&path_metadata)?;
+            if path_identity == identity {
+                let opened_identity = validate_metadata(&file.metadata()?)?;
+                if opened_identity != path_identity {
+                    return Err(io::Error::other(
+                        "edited temporary file identity changed during validation",
+                    ));
+                }
+                file.seek(SeekFrom::Start(0))?;
+                let mut edited = String::new();
+                file.read_to_string(&mut edited)?;
+                return Ok(edited);
+            }
+
+            // A different file is at the path: editors may save by writing a
+            // new file and renaming it over the original. Check the
+            // descriptor that will be read rather than the path, since a path
+            // can be repointed after it is checked, then confirm the path
+            // still names that same file.
+            let mut replacement = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&path)?;
+            let opened_identity = validate_metadata(&replacement.metadata()?)?;
+            let rebound_metadata = std::fs::symlink_metadata(&path)?;
+            let rebound_identity = validate_metadata(&rebound_metadata)?;
+            if opened_identity != rebound_identity {
+                return Err(io::Error::other(
+                    "replacement temporary file identity changed during validation",
+                ));
+            }
+            let mut edited = String::new();
+            replacement.read_to_string(&mut edited)?;
+            Ok(edited)
+        }
+    }
+
+    #[cfg(unix)]
+    fn validate_metadata(metadata: &Metadata) -> io::Result<FileIdentity> {
+        validate_security(
+            metadata.file_type().is_file(),
+            metadata.uid(),
+            metadata.mode(),
+        )?;
+        Ok(FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
         })
     }
 
-    /// [`Self::create`] with the directory and the suffix source injected for
-    /// tests. A name that already exists is retried with a new suffix, up to
-    /// 16 times; any other error is returned at once.
-    fn create_in(
-        directory: &std::path::Path,
-        initial: &str,
-        mut suffix: impl FnMut() -> u64,
-    ) -> std::io::Result<Self> {
-        for _ in 0..16 {
-            let path = directory.join(format!(
-                "sekisho-cli-{}-{:016x}.expr",
-                std::process::id(),
-                suffix()
+    /// A regular file, owned by the effective user, with permission bits
+    /// exactly 0600 — the state `create` leaves it in. Group or other read or
+    /// write bits would let another user read or change the text; any other
+    /// difference from that state is refused too, rather than judged case by
+    /// case, so an editor that replaces the file with other permissions is
+    /// refused.
+    #[cfg(unix)]
+    fn validate_security(is_file: bool, owner: u32, mode: u32) -> io::Result<()> {
+        if !is_file {
+            return Err(io::Error::other(
+                "edited temporary path is not a regular file",
             ));
-            match Self::create_at(path, initial) {
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                result => return result,
-            }
         }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "temp file name collisions exhausted",
-        ))
+        // SAFETY: `geteuid` takes no pointers and has no preconditions.
+        let current_user = unsafe { libc::geteuid() };
+        if owner != current_user {
+            return Err(io::Error::other(
+                "edited temporary file is not owned by the current user",
+            ));
+        }
+        if mode & 0o7777 != 0o600 {
+            return Err(io::Error::other(
+                "edited temporary file permissions are not 0600",
+            ));
+        }
+        Ok(())
     }
 
-    /// `create_new` makes the open fail if something already exists at `path`
-    /// — a file or a symlink — instead of opening or following it. On Unix
-    /// the mode is given to the open itself, so the file does not exist with
-    /// wider permissions first. The guard is built before the write so that a
-    /// failed write still removes the file.
-    fn create_at(path: std::path::PathBuf, initial: &str) -> std::io::Result<Self> {
-        use std::io::Write;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path)?;
-        let temporary = Self { path };
-        let written = file.write_all(initial.as_bytes());
-        drop(file);
-        written?;
-        Ok(temporary)
-    }
-}
-
-impl Drop for ExprTempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+    /// Lets tests exercise the ownership and mode rules directly, without
+    /// having to create files in those states.
+    #[cfg(all(test, unix))]
+    pub(super) fn validate_security_for_test(
+        is_file: bool,
+        owner: u32,
+        mode: u32,
+    ) -> io::Result<()> {
+        validate_security(is_file, owner, mode)
     }
 }
 
@@ -282,19 +390,14 @@ pub(super) async fn cmd_edit_expr(client: &ApiClient, edit_ctx: &mut Option<Edit
             .to_owned()
     };
 
-    let temporary = match ExprTempFile::create(&initial) {
+    let temporary = match secure_edit_temp::SecureEditTemp::create(initial.as_bytes()) {
         Ok(temporary) => temporary,
         Err(e) => {
             eprintln!("error: failed to create temp file: {e}");
             return;
         }
     };
-    // The editor is a separate program that is given the path, so the result
-    // is read back from that path rather than from a handle. Nothing here
-    // checks that it is still the file created above: on Unix that relies on
-    // the temp directory being sticky, so that other users cannot replace an
-    // entry they do not own.
-    let path = &temporary.path;
+    let path = temporary.path();
 
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
@@ -312,7 +415,7 @@ pub(super) async fn cmd_edit_expr(client: &ApiClient, edit_ctx: &mut Option<Edit
         _ => {}
     }
 
-    let edited = match std::fs::read_to_string(path) {
+    let edited = match temporary.read_to_string() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: failed to read edited file: {e}");
@@ -708,7 +811,19 @@ mod tests {
         const NAME: &str = "shell::edit::tests::hardening_editor_file_contract";
         const CHILD: &str = "SEKISHO_EDITOR_FILE_TEST_CHILD";
         let Some(case) = std::env::var_os(CHILD) else {
-            for case in ["existing", "symlink", "mode", "failure", "launch", "read"] {
+            for case in [
+                "existing",
+                "symlink",
+                "mode",
+                "failure",
+                "launch",
+                "read",
+                "replace-symlink",
+                "replace-mode",
+                "rename",
+                "directory",
+                "deleted",
+            ] {
                 let directory = std::env::temp_dir()
                     .join(format!("sekisho-editor-test-{}-{case}", std::process::id()));
                 std::fs::create_dir(&directory).unwrap();
@@ -741,6 +856,8 @@ mod tests {
         } else if case == "symlink" {
             std::fs::write(&target, "do-not-follow").unwrap();
             std::os::unix::fs::symlink(&target, &legacy).unwrap();
+        } else if case == "replace-symlink" {
+            std::fs::write(&target, "do-not-stage-target").unwrap();
         }
         let observed = directory.join("observed-path");
         let mode = directory.join("observed-mode");
@@ -751,9 +868,14 @@ mod tests {
             "stat -c %a"
         };
         let action = match case {
-            "failure" => "exit 1",
-            "read" => "printf '\\377' > \"$1\"",
-            _ => "printf 'edited-expression' > \"$1\"",
+            "failure" => "exit 1".to_owned(),
+            "read" => "printf '\\377' > \"$1\"".to_owned(),
+            "replace-symlink" => format!("rm \"$1\"; ln -s '{}' \"$1\"", target.display()),
+            "replace-mode" => "printf 'edited-expression' > \"$1.replacement\"; chmod 644 \"$1.replacement\"; mv \"$1.replacement\" \"$1\"".to_owned(),
+            "rename" => "printf 'edited-expression' > \"$1.replacement\"; chmod 600 \"$1.replacement\"; mv \"$1.replacement\" \"$1\"".to_owned(),
+            "directory" => "rm \"$1\"; mkdir \"$1\"".to_owned(),
+            "deleted" => "rm \"$1\"".to_owned(),
+            _ => "printf 'edited-expression' > \"$1\"".to_owned(),
         };
         std::fs::write(
             &editor,
@@ -809,15 +931,34 @@ mod tests {
             assert!(!legacy.exists());
         } else {
             let created = std::fs::read_to_string(&observed).unwrap();
+            if case == "directory" {
+                // File cleanup cannot remove an editor-created directory.
+                std::fs::remove_dir(&created).unwrap();
+            }
             assert!(
                 !std::path::Path::new(&created).exists(),
                 "temp residue: {created}"
             );
         }
-        if matches!(case, "failure" | "launch" | "read") {
+        if matches!(
+            case,
+            "failure"
+                | "launch"
+                | "read"
+                | "replace-symlink"
+                | "replace-mode"
+                | "directory"
+                | "deleted"
+        ) {
             assert_eq!(edit_ctx.unwrap().changes, before);
         } else {
             assert_eq!(edit_ctx.unwrap().changes["expr"], "edited-expression");
+        }
+        if case == "replace-symlink" {
+            assert_eq!(
+                std::fs::read_to_string(&target).unwrap(),
+                "do-not-stage-target"
+            );
         }
         for entry in std::fs::read_dir(&directory).unwrap() {
             let path = entry.unwrap().path();
@@ -831,27 +972,21 @@ mod tests {
     }
 
     #[test]
-    fn hardening_editor_file_collision_retry_and_drop() {
-        let directory = std::env::temp_dir().join(format!(
-            "sekisho-editor-collision-test-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        let collision = directory.join(format!(
-            "sekisho-cli-{}-0000000000000000.expr",
-            std::process::id()
-        ));
+    fn hardening_editor_file_exclusive_create_and_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("reserved.expr");
         std::fs::write(&collision, "protected").unwrap();
-        let mut calls = 0;
-        let file = ExprTempFile::create_in(&directory, "initial", || {
-            calls += 1;
-            if calls == 1 { 0 } else { 1 }
-        })
-        .unwrap();
-        assert_eq!(calls, 2);
+        let error = tempfile::Builder::new()
+            .prefix("reserved")
+            .suffix(".expr")
+            .rand_bytes(0)
+            .tempfile_in(directory.path())
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read_to_string(&collision).unwrap(), "protected");
-        assert_eq!(std::fs::read_to_string(&file.path).unwrap(), "initial");
-        let created = file.path.clone();
+        let file = secure_edit_temp::SecureEditTemp::create(b"initial").unwrap();
+        assert_eq!(std::fs::read_to_string(file.path()).unwrap(), "initial");
+        let created = file.path().to_owned();
         assert!(
             std::panic::catch_unwind(move || {
                 let _file = file;
@@ -860,32 +995,22 @@ mod tests {
             .is_err()
         );
         assert!(!created.exists());
-        let mut calls = 0;
-        let error = ExprTempFile::create_in(&directory, "do not write", || {
-            calls += 1;
-            0
-        })
-        .err()
-        .unwrap();
-        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(calls, 16);
-        let mut calls = 0;
         assert!(
-            ExprTempFile::create_in(&directory.join("missing"), "initial", || {
-                calls += 1;
-                0
-            })
-            .is_err()
+            tempfile::Builder::new()
+                .tempfile_in(directory.path().join("missing"))
+                .is_err()
         );
-        assert_eq!(calls, 1);
         assert_eq!(std::fs::read_to_string(&collision).unwrap(), "protected");
         #[cfg(unix)]
         {
-            let link = directory.join("collision-symlink.expr");
+            let link = directory.path().join("link.expr");
             std::os::unix::fs::symlink(&collision, &link).unwrap();
-            let error = ExprTempFile::create_at(link.clone(), "do not follow")
-                .err()
-                .unwrap();
+            let error = tempfile::Builder::new()
+                .prefix("link")
+                .suffix(".expr")
+                .rand_bytes(0)
+                .tempfile_in(directory.path())
+                .unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
             assert!(
                 std::fs::symlink_metadata(&link)
@@ -895,7 +1020,20 @@ mod tests {
             );
             assert_eq!(std::fs::read_to_string(&collision).unwrap(), "protected");
         }
-        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardening_editor_file_rejects_wrong_owner_and_non_private_mode() {
+        // SAFETY: `geteuid` takes no pointers and has no preconditions.
+        let owner = unsafe { libc::geteuid() };
+        use secure_edit_temp::validate_security_for_test as validate;
+        assert!(validate(true, owner, 0o600).is_ok());
+        assert!(validate(true, owner.wrapping_add(1), 0o600).is_err());
+        assert!(validate(false, owner, 0o600).is_err());
+        for mode in [0o644, 0o400, 0o1600, 0o4600] {
+            assert!(validate(true, owner, mode).is_err(), "mode {mode:o}");
+        }
     }
 
     #[cfg(unix)]
