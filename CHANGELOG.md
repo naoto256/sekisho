@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   ids in its URLs and answers `400 Bad Request` for anything else.
 - Fetching SAML metadata no longer follows HTTP redirects. If an identity
   provider's `metadata_url` redirects, configure the final URL.
+- For ordinary scalar fields, `sekisho-cli` `set` keeps repeated spaces inside
+  the value, and a value wrapped in a matching pair of single or double quotes
+  is stored as a string without the quotes. Use quotes to enter a string that
+  would otherwise be read as `true`, `false`, `null` or a number. A value that
+  opens with a quote must close with the same quote; `set` now rejects it
+  otherwise. Array fields and identity-provider references are read as before.
 
 ### Fixed
 
@@ -48,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   removes it.
 - Return a configuration error instead of panicking when an identity
   provider's type and stored configuration disagree.
+- Stop `sekisho-cli` from panicking when shortening a session id would split
+  a multi-byte character.
+- Open the saved expression in `sekisho-cli` `edit-expr` when editing an
+  existing policy. It previously started from an empty buffer unless a change
+  to the expression was already pending.
 
 ### Removed
 
@@ -61,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   [Operating → Overview § Backups](https://naoto256.github.io/sekisho/docs/operating/day-to-day.html#backups)
   instead.
   The separately documented YAML policy import never existed.
+
 - Remove `log_level` from the global configuration, the Web UI and
   `sekisho-cli`. The value was stored but never applied. Set the log level
   with `--log-level`, `SEKISHO_LOG_LEVEL` or `RUST_LOG` and restart the daemon.
@@ -80,6 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Log only the length of ACME HTTP-01 challenge tokens.
 - Keep secrets out of the `Debug` output of the pending-login state, the
   Web UI guard configuration and the identity-provider form.
+- Create the `sekisho-cli` `edit-expr` temporary file exclusively, with a
+  randomized name and, on Unix, mode `0600`.
 
 ## [0.1.1] - 2026-10-04
 
