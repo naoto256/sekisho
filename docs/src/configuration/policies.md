@@ -122,10 +122,13 @@ attributes authenticated by the configured IdP.
 Values are typed at evaluation time, not at parse time:
 
 - A string literal **containing `/`** that parses as a network is
-  treated as a CIDR range, and the left-hand value is parsed as an IP
+  treated as a CIDR range when the left-hand value parses as an IP
   address. Membership is ordinary subnet containment. Both IPv4 and IPv6
-  networks work (`"10.0.0.0/8"`, `"2001:db8::/32"`). Only `==` and
-  `!=` are defined for CIDR; other operators evaluate to false.
+  networks work (`"10.0.0.0/8"`, `"2001:db8::/32"`). In this CIDR
+  branch, `==` tests membership and `!=` its inverse; other comparison
+  operators evaluate to false. If the left-hand value is not an IP
+  address, evaluation falls back to ordinary string equality or inequality,
+  or regex matching.
 
   The `/` is what triggers it. A literal without one — `"10.0.0.1"` —
   is **not** a CIDR comparison and falls through to case-insensitive
@@ -149,13 +152,17 @@ lifetime. A compile error writes a debug-level log line, is not cached
 evaluate to false.
 
 Multi-valued fields (most notably `claim.groups`) are matched with
-**any-element-matches** semantics: `claim.groups == "sre"` is true
-if any group in the session equals `"sre"`. The same holds for `in`
-and the regex operators.
+**any-element-matches** semantics for `==`, `!=`, `~=`, `!~` and `in`:
+the expression is true if any resolved element satisfies the operator.
+For a user in both `contractors` and `staff`,
+`claim.groups != "contractors"` is therefore true. To require that no group
+equals `"contractors"`, use `claim.groups not in ["contractors"]`.
 
-`in` / `not in` take a list literal and behave like a chain of `==`
-comparisons under OR. The list elements may mix types; CIDR
-strings inside the list are still recognised as CIDR ranges.
+`in` / `not in` take a list literal. `in` behaves like a chain of `==`
+comparisons under OR. For a non-empty resolved field, `not in` is true
+only when no resolved element equals any list element. The list elements
+may mix types; CIDR strings inside the list are still recognised as
+CIDR ranges.
 
 If a field cannot be resolved (the user is unauthenticated and the
 expression references `claim.*`, or the IdP did not emit the claim
