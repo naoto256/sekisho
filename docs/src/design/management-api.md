@@ -133,6 +133,9 @@ there would restrict nothing while implying otherwise.
   Providers reject `null` on required fields, and treat it as "no
   change" on the client secret. See
   [Update semantics](../configuration/idps.md#update-semantics).
+- For global `default_idp_id`, `auth_domain` and `acme_email`, omission keeps
+  the value, `null` clears it, and a value sets it. Clearing `auth_domain`
+  requires a daemon restart.
 
 Why every resource behaves the same way is in
 [Architecture](./architecture.md#2-json-merge-patch-extending-the-data-model).
