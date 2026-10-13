@@ -1641,25 +1641,9 @@ mod tests {
 
     #[test]
     fn hardening_acme_logs_contain_only_token_length() {
-        const NAME: &str = "runtime::tests::hardening_acme_logs_contain_only_token_length";
-        const CHILD: &str = "SEKISHO_ACME_LOG_TEST_CHILD";
-        // Runs alone in a child process: `tracing` caches callsite `Interest`
-        // once per process, so the subscriber installed below would otherwise
-        // share that cache with every other test in this binary.
-        if std::env::var(CHILD).as_deref() != Ok(NAME) {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", NAME, "--nocapture"])
-                .env(CHILD, NAME)
-                .output()
-                .unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                output.status.success()
-                    && stdout.contains(&format!("test {NAME} ... ok"))
-                    && stdout.contains("1 passed; 0 failed; 0 ignored"),
-                "{stdout}\n{stderr}"
-            );
+        if sekisho_test_support::run_in_child(
+            "runtime::tests::hardening_acme_logs_contain_only_token_length",
+        ) {
             return;
         }
         #[derive(Clone, Default)]

@@ -486,57 +486,6 @@ pub mod test_capture {
 mod tests {
     use super::*;
 
-    /// Re-run the named test alone in a child process.
-    ///
-    /// `tracing` caches each callsite's `Interest` once per process, not per
-    /// subscriber, so the subscriber a test installs with `set_default` shares
-    /// that cache with every other test in this binary. The span-capture tests
-    /// therefore make their assertions in a process that runs nothing else.
-    ///
-    /// Returns `true` in the parent once the child has passed, and the caller
-    /// returns without running its body. Returns `false` in the child, which
-    /// is recognised by the marker variable, and the caller runs the body.
-    /// The parent requires both the named `... ok` line and a one-test
-    /// summary, so a filter that matches nothing cannot count as a pass.
-    fn run_isolated_request_id_test(name: &str) -> bool {
-        const CHILD_MARKER: &str = "SEKISHO_REQUEST_ID_TEST_CHILD";
-        if let Some(marker) = std::env::var_os(CHILD_MARKER) {
-            assert_eq!(
-                marker,
-                std::ffi::OsStr::new(name),
-                "wrong child test marker"
-            );
-            return false;
-        }
-
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                name,
-                "--exact",
-                "--nocapture",
-                "--format=pretty",
-                "--color=never",
-                "--test-threads=1",
-            ])
-            .env(CHILD_MARKER, name)
-            .output()
-            .expect("start isolated request-id test");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let named_test_passed = stdout
-            .lines()
-            .any(|line| line == format!("test {name} ... ok"));
-        let exactly_one_passed = stdout
-            .lines()
-            .any(|line| line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;"));
-        assert!(
-            output.status.success() && named_test_passed && exactly_one_passed,
-            "isolated test {name} did not run exactly once and pass ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
-            output.status,
-        );
-        true
-    }
-
     /// Records the `request_id` of each `http.request` span as it is created,
     /// and whether the marker event from the test handler was emitted inside
     /// such a span.
@@ -635,7 +584,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_id_middleware_opens_a_span_around_the_handler() {
-        if run_isolated_request_id_test(
+        if sekisho_test_support::run_in_child(
             "audit::tests::request_id_middleware_opens_a_span_around_the_handler",
         ) {
             return;
@@ -743,7 +692,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_id_survives_production_log_level_filters() {
-        if run_isolated_request_id_test(
+        if sekisho_test_support::run_in_child(
             "audit::tests::request_id_survives_production_log_level_filters",
         ) {
             return;
@@ -819,7 +768,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_id_target_opt_out_removes_json_span_context() {
-        if run_isolated_request_id_test(
+        if sekisho_test_support::run_in_child(
             "audit::tests::request_id_target_opt_out_removes_json_span_context",
         ) {
             return;
@@ -932,7 +881,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_id_real_routers_include_handler_events_in_production_json_span_list() {
-        if run_isolated_request_id_test(
+        if sekisho_test_support::run_in_child(
             "audit::tests::request_id_real_routers_include_handler_events_in_production_json_span_list",
         ) {
             return;
