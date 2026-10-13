@@ -1,0 +1,10 @@
+[package]
+name = "sekisho-test-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Process isolation for Sekisho tracing capture tests"
+
+[dependencies]
+tracing = "0.1"

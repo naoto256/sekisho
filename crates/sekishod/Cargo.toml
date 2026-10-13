@@ -64,4 +64,5 @@ zeroize = { version = "1", features = ["derive"] }
 libc = "0.2"
 
 [dev-dependencies]
+sekisho-test-support = { path = "../sekisho-test-support" }
 proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
