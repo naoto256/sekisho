@@ -411,13 +411,16 @@ mod tests {
 
     #[tokio::test]
     async fn safe_redirect_rejection_logs_only_the_input_length() {
+        if sekisho_test_support::run_in_child(
+            "auth::tests::safe_redirect_rejection_logs_only_the_input_length",
+        ) {
+            return;
+        }
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let capture = RedirectWarningCapture::default();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let degraded = crate::store::Store::new_for_test_degraded("must not be read")
             .await
             .expect("degraded store");

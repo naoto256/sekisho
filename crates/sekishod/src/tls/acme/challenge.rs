@@ -98,14 +98,14 @@ mod tests {
                 Ok(())
             }
         }
-        use tracing_subscriber::util::SubscriberInitExt;
         let buffer = Buffer::default();
         let writer = buffer.clone();
-        let _guard = tracing_subscriber::fmt()
-            .json()
-            .with_writer(move || writer.clone())
-            .finish()
-            .set_default();
+        let _guard = sekisho_test_support::set_default(
+            tracing_subscriber::fmt()
+                .json()
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

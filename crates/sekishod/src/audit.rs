@@ -591,13 +591,11 @@ mod tests {
         }
         use tower::ServiceExt;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let supplied = "0190e5e5-3a8b-7c01-9d4f-12345678abcd";
         let probe = RequestSpanProbe::default();
-        let _guard = tracing_subscriber::registry()
-            .with(probe.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(probe.clone()));
         let app = axum::Router::new()
             .route(
                 "/",
@@ -646,7 +644,6 @@ mod tests {
     use crate::session::manager::SessionManager;
     use crate::store::Store;
     use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
 
     async fn fresh_store() -> Store {
         Store::new_for_test("sqlite::memory:", [0x41u8; 32], None)
@@ -711,14 +708,15 @@ mod tests {
         ] {
             let buffer = JsonLogBuffer::default();
             let writer = buffer.clone();
-            let guard = tracing_subscriber::fmt()
-                .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-                .json()
-                .with_current_span(false)
-                .with_span_list(true)
-                .with_writer(move || writer.clone())
-                .finish()
-                .set_default();
+            let guard = sekisho_test_support::set_default(
+                tracing_subscriber::fmt()
+                    .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+                    .json()
+                    .with_current_span(false)
+                    .with_span_list(true)
+                    .with_writer(move || writer.clone())
+                    .finish(),
+            );
             let app = axum::Router::new()
                 .route(
                     "/",
@@ -779,14 +777,15 @@ mod tests {
         {
             let buffer = JsonLogBuffer::default();
             let writer = buffer.clone();
-            let _guard = tracing_subscriber::fmt()
-                .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-                .json()
-                .with_current_span(false)
-                .with_span_list(true)
-                .with_writer(move || writer.clone())
-                .finish()
-                .set_default();
+            let _guard = sekisho_test_support::set_default(
+                tracing_subscriber::fmt()
+                    .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+                    .json()
+                    .with_current_span(false)
+                    .with_span_list(true)
+                    .with_writer(move || writer.clone())
+                    .finish(),
+            );
             let app = axum::Router::new()
                 .route(
                     "/",
@@ -894,14 +893,15 @@ mod tests {
         // Same formatter options as the daemon's JSON log format in
         // `runtime.rs` (no current-span object, span list on). The assertion
         // on `spans` is only meaningful while the two agree.
-        let _guard = tracing_subscriber::fmt()
-            .json()
-            .with_current_span(false)
-            .with_span_list(true)
-            .with_max_level(tracing::Level::DEBUG)
-            .with_writer(move || writer.clone())
-            .finish()
-            .set_default();
+        let _guard = sekisho_test_support::set_default(
+            tracing_subscriber::fmt()
+                .json()
+                .with_current_span(false)
+                .with_span_list(true)
+                .with_max_level(tracing::Level::DEBUG)
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
         let supplied = "0190e5e5-3a8b-7c01-9d4f-12345678abcd";
         let response = management
             .oneshot(
@@ -996,10 +996,14 @@ mod tests {
 
     #[tokio::test]
     async fn session_create_and_revoke_emit_audit_events() {
+        if sekisho_test_support::run_in_child(
+            "audit::tests::session_create_and_revoke_emit_audit_events",
+        ) {
+            return;
+        }
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
 
         let store = fresh_store().await;
         // Need a real IdP row so the session FK is satisfiable, even
@@ -1062,6 +1066,10 @@ mod tests {
 
     #[tokio::test]
     async fn mgmt_create_emits_attribution_fields() {
+        if sekisho_test_support::run_in_child("audit::tests::mgmt_create_emits_attribution_fields")
+        {
+            return;
+        }
         // The mgmt CRUD events are the audit core. Driving
         // a full axum router would need extra deps, but we can verify
         // the contract a different way: emit the same shape the
@@ -1070,9 +1078,8 @@ mod tests {
         // forgets `actor_type` / `actor_id` / `target_id`, this test
         // catches it.
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let actor = Actor {
             kind: ActorKind::ApiKey,
             id: "sks_TEST".into(),
@@ -1110,10 +1117,14 @@ mod tests {
 
     #[tokio::test]
     async fn audit_mgmt_macro_emits_full_attribution_with_target() {
+        if sekisho_test_support::run_in_child(
+            "audit::tests::audit_mgmt_macro_emits_full_attribution_with_target",
+        ) {
+            return;
+        }
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let actor = Actor {
             kind: ActorKind::ApiKey,
             id: "sks_M".into(),
@@ -1143,14 +1154,18 @@ mod tests {
 
     #[tokio::test]
     async fn audit_mgmt_macro_omits_target_id_when_absent() {
+        if sekisho_test_support::run_in_child(
+            "audit::tests::audit_mgmt_macro_omits_target_id_when_absent",
+        ) {
+            return;
+        }
         // The no-target arm is used by config.update / instance.update /
         // mgmt_cert.upload — singletons that don't have an id. The macro
         // must not synthesise a stray empty `target_id` field, otherwise
         // operators would have to special-case parsing.
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let actor = Actor {
             kind: ActorKind::MgmtSession,
             id: "mgmt_X".into(),
@@ -1177,10 +1192,14 @@ mod tests {
 
     #[tokio::test]
     async fn audit_crypto_macro_emits_warn_level_with_crypto_category() {
+        if sekisho_test_support::run_in_child(
+            "audit::tests::audit_crypto_macro_emits_warn_level_with_crypto_category",
+        ) {
+            return;
+        }
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let actor = Actor {
             kind: ActorKind::ApiKey,
             id: "sks_C".into(),

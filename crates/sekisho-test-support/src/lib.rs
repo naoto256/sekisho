@@ -125,6 +125,9 @@ where
 }
 
 #[cfg(test)]
+mod source_scan;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;

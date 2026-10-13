@@ -1857,6 +1857,11 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn env_var_reimport_after_clear_logs_unset_condition() {
+        if sekisho_test_support::run_in_child(
+            "store::store_test::tests::env_var_reimport_after_clear_logs_unset_condition",
+        ) {
+            return;
+        }
         use std::fmt::Write as _;
         use std::sync::{Arc, Mutex};
         use tracing_subscriber::layer::Context;
@@ -1944,7 +1949,7 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(ImportLogLayer {
             fields: captured.clone(),
         });
-        let _subscriber_guard = subscriber.set_default();
+        let _subscriber_guard = sekisho_test_support::set_default(subscriber);
 
         let second = Store::new(&path, MasterKey::from_test_bytes(TEST_MASTER_KEY))
             .await

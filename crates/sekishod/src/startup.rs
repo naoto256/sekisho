@@ -325,7 +325,6 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::Barrier;
     use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
     use uuid::Uuid;
 
     fn cfg(
@@ -397,9 +396,8 @@ mod tests {
     /// Install an audit capture layer scoped to the closure.
     fn with_capture<F: FnOnce()>(f: F) -> Vec<crate::audit::test_capture::CapturedEvent> {
         let capture = AuditCapture::new();
-        let guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         f();
         drop(guard);
         capture.snapshot()
@@ -409,6 +407,9 @@ mod tests {
 
     #[test]
     fn warns_when_auth_domain_missing() {
+        if sekisho_test_support::run_in_child("startup::tests::warns_when_auth_domain_missing") {
+            return;
+        }
         let events = with_capture(|| {
             check_config_sanity(
                 &cfg(None, Some("op@example.com"), Some(Uuid::new_v4())),
@@ -422,6 +423,11 @@ mod tests {
 
     #[test]
     fn warns_when_no_acme_email_and_no_certs() {
+        if sekisho_test_support::run_in_child(
+            "startup::tests::warns_when_no_acme_email_and_no_certs",
+        ) {
+            return;
+        }
         let events = with_capture(|| {
             check_config_sanity(&cfg(Some("auth.example.com"), None, None), &[], &[]);
         });
@@ -434,6 +440,11 @@ mod tests {
 
     #[test]
     fn no_warn_when_acme_email_missing_but_certs_present() {
+        if sekisho_test_support::run_in_child(
+            "startup::tests::no_warn_when_acme_email_missing_but_certs_present",
+        ) {
+            return;
+        }
         let events = with_capture(|| {
             check_config_sanity(
                 &cfg(Some("auth.example.com"), None, Some(Uuid::new_v4())),
@@ -450,6 +461,11 @@ mod tests {
 
     #[test]
     fn warns_when_route_has_no_idp_and_no_default() {
+        if sekisho_test_support::run_in_child(
+            "startup::tests::warns_when_route_has_no_idp_and_no_default",
+        ) {
+            return;
+        }
         let events = with_capture(|| {
             check_config_sanity(
                 &cfg(Some("auth.example.com"), Some("op@example.com"), None),
@@ -465,6 +481,11 @@ mod tests {
 
     #[test]
     fn no_warn_when_default_idp_set_even_if_route_has_none() {
+        if sekisho_test_support::run_in_child(
+            "startup::tests::no_warn_when_default_idp_set_even_if_route_has_none",
+        ) {
+            return;
+        }
         let events = with_capture(|| {
             check_config_sanity(
                 &cfg(
@@ -515,6 +536,9 @@ mod tests {
 
     #[test]
     fn warns_on_unparseable_route_url() {
+        if sekisho_test_support::run_in_child("startup::tests::warns_on_unparseable_route_url") {
+            return;
+        }
         let events = with_capture(|| {
             check_route_urls(&[route("bad", vec!["http://ok.example/", "not a url"], None)]);
         });
@@ -526,6 +550,9 @@ mod tests {
 
     #[test]
     fn no_warn_when_all_route_urls_parse() {
+        if sekisho_test_support::run_in_child("startup::tests::no_warn_when_all_route_urls_parse") {
+            return;
+        }
         let events = with_capture(|| {
             check_route_urls(&[route("ok", vec!["http://ok.example/", "https://b/"], None)]);
         });
@@ -536,6 +563,11 @@ mod tests {
 
     #[test]
     fn warns_when_cert_expires_within_window() {
+        if sekisho_test_support::run_in_child(
+            "startup::tests::warns_when_cert_expires_within_window",
+        ) {
+            return;
+        }
         let now = Utc::now();
         let events = with_capture(|| {
             check_cert_expiry(
@@ -560,6 +592,11 @@ mod tests {
 
     #[test]
     fn warns_with_acme_sentence_when_email_missing() {
+        if sekisho_test_support::run_in_child(
+            "startup::tests::warns_with_acme_sentence_when_email_missing",
+        ) {
+            return;
+        }
         let now = Utc::now();
         let events = with_capture(|| {
             check_cert_expiry(
@@ -581,6 +618,9 @@ mod tests {
 
     #[test]
     fn warns_when_cert_already_expired() {
+        if sekisho_test_support::run_in_child("startup::tests::warns_when_cert_already_expired") {
+            return;
+        }
         let now = Utc::now();
         let events = with_capture(|| {
             check_cert_expiry(
@@ -599,6 +639,9 @@ mod tests {
 
     #[test]
     fn no_warn_when_cert_far_from_expiry() {
+        if sekisho_test_support::run_in_child("startup::tests::no_warn_when_cert_far_from_expiry") {
+            return;
+        }
         let now = Utc::now();
         let events = with_capture(|| {
             check_cert_expiry(
@@ -693,10 +736,14 @@ mod tests {
 
     #[tokio::test]
     async fn probe_against_unresolvable_host_emits_warn_and_failure_label() {
+        if sekisho_test_support::run_in_child(
+            "startup::tests::probe_against_unresolvable_host_emits_warn_and_failure_label",
+        ) {
+            return;
+        }
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(500))

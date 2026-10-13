@@ -311,9 +311,13 @@ MC4CAQAwBQYDK2VwBCIEIL2MOtYQb2Z9wJrtkrL8tZ2H0LGgEqKnBN46MrVivE0V
 
     #[tokio::test]
     async fn hardening_identity_jwt_rejection_is_unauthorized_and_redacted() {
+        if sekisho_test_support::run_in_child(
+            "auth::guard::jwt::tests::hardening_identity_jwt_rejection_is_unauthorized_and_redacted",
+        ) {
+            return;
+        }
         use axum::{Router, extract::Request, middleware::Next, routing::get};
         use std::{io::Write, sync::Mutex, time::Duration};
-        use tracing::instrument::WithSubscriber;
 
         struct LogWriter(Arc<Mutex<Vec<u8>>>);
         impl Write for LogWriter {
@@ -365,8 +369,10 @@ MC4CAQAwBQYDK2VwBCIEIL2MOtYQb2Z9wJrtkrL8tZ2H0LGgEqKnBN46MrVivE0V
             .route("/", get(|| async { "accepted" }))
             .layer(axum::middleware::from_fn(
                 move |request: Request, next: Next| {
-                    super::super::guard(axum::extract::State(state.clone()), request, next)
-                        .with_subscriber(dispatch.clone())
+                    sekisho_test_support::with_subscriber(
+                        super::super::guard(axum::extract::State(state.clone()), request, next),
+                        dispatch.clone(),
+                    )
                 },
             ));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
