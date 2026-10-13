@@ -1570,11 +1570,16 @@ mod tests {
 
     #[tokio::test]
     async fn slo_validation_failures_preserve_pending_auth() {
+        if sekisho_test_support::run_in_child(
+            "auth::saml::callback::tests::slo_validation_failures_preserve_pending_auth",
+        ) {
+            return;
+        }
         let app = TestSamlApp::new().await;
         let success_count = Arc::new(AtomicUsize::new(0));
         let subscriber =
             tracing_subscriber::registry().with(SamlSloSuccessCounter(success_count.clone()));
-        let _guard = subscriber.set_default();
+        let _guard = sekisho_test_support::set_default(subscriber);
 
         assert_terminal_response(
             get_slo_response(app.router.clone(), "").await,
@@ -1717,6 +1722,11 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_valid_slo_consumes_once_and_emits_one_success() {
+        if sekisho_test_support::run_in_child(
+            "auth::saml::callback::tests::concurrent_valid_slo_consumes_once_and_emits_one_success",
+        ) {
+            return;
+        }
         let app = TestSamlApp::new().await;
         app.insert_pending(
             "slo-concurrent",
@@ -1730,7 +1740,7 @@ mod tests {
         let success_count = Arc::new(AtomicUsize::new(0));
         let subscriber =
             tracing_subscriber::registry().with(SamlSloSuccessCounter(success_count.clone()));
-        let _guard = subscriber.set_default();
+        let _guard = sekisho_test_support::set_default(subscriber);
 
         let (left, right) = tokio::join!(
             get_slo_response(app.router.clone(), &query),

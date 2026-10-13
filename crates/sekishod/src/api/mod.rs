@@ -1874,14 +1874,17 @@ mod endpoint_tests {
 
     #[tokio::test]
     async fn insufficient_scope_is_fixed_403_with_no_touch_handler_or_resource_mutation() {
+        if sekisho_test_support::run_in_child(
+            "api::endpoint_tests::insufficient_scope_is_fixed_403_with_no_touch_handler_or_resource_mutation",
+        ) {
+            return;
+        }
         use crate::audit::test_capture::AuditCapture;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let (router, key, key_id, store) =
             test_router_store_api_key_with_scopes(r#"["management:read"]"#).await;
         let version_before = store.route_version_current().await.unwrap();
@@ -1912,14 +1915,17 @@ mod endpoint_tests {
 
     #[tokio::test]
     async fn authorized_request_survives_usage_touch_failure() {
+        if sekisho_test_support::run_in_child(
+            "api::endpoint_tests::authorized_request_survives_usage_touch_failure",
+        ) {
+            return;
+        }
         use crate::audit::test_capture::AuditCapture;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let (router, key, key_id, store) =
             test_router_store_api_key_with_scopes(r#"["management:read"]"#).await;
         sqlx::query(
@@ -1955,14 +1961,17 @@ mod endpoint_tests {
 
     #[tokio::test]
     async fn api_key_create_rejects_invalid_names_with_fixed_error_and_no_side_effects() {
+        if sekisho_test_support::run_in_child(
+            "api::endpoint_tests::api_key_create_rejects_invalid_names_with_fixed_error_and_no_side_effects",
+        ) {
+            return;
+        }
         use crate::audit::test_capture::AuditCapture;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let (router, key, store) = test_router_store_api_key().await;
         let count_before = store.api_key_count().await.unwrap();
         let expected = serde_json::json!({
@@ -2002,14 +2011,17 @@ mod endpoint_tests {
 
     #[tokio::test]
     async fn api_key_create_rejects_missing_empty_duplicate_or_noncanonical_scopes() {
+        if sekisho_test_support::run_in_child(
+            "api::endpoint_tests::api_key_create_rejects_missing_empty_duplicate_or_noncanonical_scopes",
+        ) {
+            return;
+        }
         use crate::audit::test_capture::AuditCapture;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let (router, key, store) = test_router_store_api_key().await;
         let count_before = store.api_key_count().await.unwrap();
 
@@ -2066,14 +2078,17 @@ mod endpoint_tests {
 
     #[tokio::test]
     async fn api_key_create_preserves_valid_name_bytes_and_never_audits_secret() {
+        if sekisho_test_support::run_in_child(
+            "api::endpoint_tests::api_key_create_preserves_valid_name_bytes_and_never_audits_secret",
+        ) {
+            return;
+        }
         use crate::audit::test_capture::AuditCapture;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let (router, key, store) = test_router_store_api_key().await;
         let names = ["a".repeat(255), "界".repeat(85), "  ops key\t".to_owned()];
         let mut created = Vec::new();
@@ -3094,14 +3109,17 @@ mod endpoint_tests {
 
     #[tokio::test]
     async fn idp_update_rejects_invalid_active_config_before_mutation() {
+        if sekisho_test_support::run_in_child(
+            "api::endpoint_tests::idp_update_rejects_invalid_active_config_before_mutation",
+        ) {
+            return;
+        }
         use crate::audit::test_capture::AuditCapture;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let (router, key, store) = test_router_store_api_key().await;
         let (oidc_id, _) = seed_oidc_idp(&store).await;
         let saml_id = seed_saml_idp(&store).await;
@@ -3544,14 +3562,17 @@ mod endpoint_tests {
 
     #[tokio::test]
     async fn idp_effective_no_ops_do_not_write_version_or_success_audit() {
+        if sekisho_test_support::run_in_child(
+            "api::endpoint_tests::idp_effective_no_ops_do_not_write_version_or_success_audit",
+        ) {
+            return;
+        }
         use crate::audit::test_capture::AuditCapture;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let (router, key, store) = test_router_store_api_key().await;
         let (oidc_id, _) = seed_oidc_idp(&store).await;
         let before = serde_json::to_vec(&store.get_idp(oidc_id).await.unwrap()).unwrap();
@@ -3622,14 +3643,17 @@ mod endpoint_tests {
 
     #[tokio::test]
     async fn proxy_cert_upload_rejects_san_mismatch_before_persist_and_reload() {
+        if sekisho_test_support::run_in_child(
+            "api::endpoint_tests::proxy_cert_upload_rejects_san_mismatch_before_persist_and_reload",
+        ) {
+            return;
+        }
         use crate::audit::test_capture::AuditCapture;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let store = Store::new_for_test("sqlite::memory:", [42u8; 32], None)
             .await
             .unwrap();
@@ -3808,17 +3832,20 @@ mod endpoint_tests {
 
     #[tokio::test]
     async fn proxy_owned_policy_headers_are_fixed_400_before_store_version_or_audit() {
+        if sekisho_test_support::run_in_child(
+            "api::endpoint_tests::proxy_owned_policy_headers_are_fixed_400_before_store_version_or_audit",
+        ) {
+            return;
+        }
         use crate::audit::test_capture::AuditCapture;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         const UNSAFE: &str = r#"request.header.x_sekisho_user == "admin""#;
         const SAFE: &str = r#"request.header.x_request_source == "scheduler""#;
 
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let (router, key, store) = test_router_store_api_key().await;
 
         let (status, body) = send_request(

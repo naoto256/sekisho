@@ -347,6 +347,11 @@ mod tests {
 
     #[test]
     fn config_fetch_failure_keeps_idp_list_without_default_badge_and_warns() {
+        if sekisho_test_support::run_in_child(
+            "handlers::idps::tests::config_fetch_failure_keeps_idp_list_without_default_badge_and_warns",
+        ) {
+            return;
+        }
         let warnings = Arc::new(AtomicUsize::new(0));
         let subscriber = tracing_subscriber::registry().with(WarningCounter(warnings.clone()));
         let items = vec![serde_json::json!({
@@ -355,7 +360,7 @@ mod tests {
             "type": "oidc"
         })];
 
-        let rendered = tracing::subscriber::with_default(subscriber, || {
+        let rendered = sekisho_test_support::with_default(subscriber, || {
             list_with_config(&items, Err::<Value, _>("config unavailable")).into_string()
         });
 

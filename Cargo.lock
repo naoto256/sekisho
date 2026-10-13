@@ -3004,6 +3004,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sekisho-test-support"
+version = "0.1.1"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
 name = "sekisho-webui"
 version = "0.1.1"
 dependencies = [
@@ -3024,6 +3031,7 @@ dependencies = [
  "rustls-pemfile",
  "sekisho-api-protocol",
  "sekisho-management-rpk-tls",
+ "sekisho-test-support",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3075,6 +3083,7 @@ dependencies = [
  "rustls",
  "sekisho-api-protocol",
  "sekisho-management-rpk-tls",
+ "sekisho-test-support",
  "serde",
  "serde_json",
  "sha2",

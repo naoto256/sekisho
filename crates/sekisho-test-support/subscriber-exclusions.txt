@@ -1,0 +1,3 @@
+# One workspace-relative file path, a tab, and its production-use reason per line.
+# The source scan skips each listed file as a whole.
+# No file currently needs an exclusion.

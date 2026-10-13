@@ -81,24 +81,9 @@ mod tests {
 
     #[test]
     fn hardening_acme_lookup_failure_logs_only_token_length() {
-        const NAME: &str =
-            "tls::acme::challenge::tests::hardening_acme_lookup_failure_logs_only_token_length";
-        const CHILD: &str = "SEKISHO_ACME_LOOKUP_LOG_TEST_CHILD";
-        // Isolate the subscriber from process-global tracing callsite interest caches.
-        if std::env::var(CHILD).as_deref() != Ok(NAME) {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", NAME, "--nocapture"])
-                .env(CHILD, NAME)
-                .output()
-                .unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                output.status.success()
-                    && stdout.contains(&format!("test {NAME} ... ok"))
-                    && stdout.contains("1 passed; 0 failed; 0 ignored"),
-                "{stdout}\n{stderr}"
-            );
+        if sekisho_test_support::run_in_child(
+            "tls::acme::challenge::tests::hardening_acme_lookup_failure_logs_only_token_length",
+        ) {
             return;
         }
 
@@ -113,14 +98,14 @@ mod tests {
                 Ok(())
             }
         }
-        use tracing_subscriber::util::SubscriberInitExt;
         let buffer = Buffer::default();
         let writer = buffer.clone();
-        let _guard = tracing_subscriber::fmt()
-            .json()
-            .with_writer(move || writer.clone())
-            .finish()
-            .set_default();
+        let _guard = sekisho_test_support::set_default(
+            tracing_subscriber::fmt()
+                .json()
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

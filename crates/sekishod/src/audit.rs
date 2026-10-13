@@ -486,57 +486,6 @@ pub mod test_capture {
 mod tests {
     use super::*;
 
-    /// Re-run the named test alone in a child process.
-    ///
-    /// `tracing` caches each callsite's `Interest` once per process, not per
-    /// subscriber, so the subscriber a test installs with `set_default` shares
-    /// that cache with every other test in this binary. The span-capture tests
-    /// therefore make their assertions in a process that runs nothing else.
-    ///
-    /// Returns `true` in the parent once the child has passed, and the caller
-    /// returns without running its body. Returns `false` in the child, which
-    /// is recognised by the marker variable, and the caller runs the body.
-    /// The parent requires both the named `... ok` line and a one-test
-    /// summary, so a filter that matches nothing cannot count as a pass.
-    fn run_isolated_request_id_test(name: &str) -> bool {
-        const CHILD_MARKER: &str = "SEKISHO_REQUEST_ID_TEST_CHILD";
-        if let Some(marker) = std::env::var_os(CHILD_MARKER) {
-            assert_eq!(
-                marker,
-                std::ffi::OsStr::new(name),
-                "wrong child test marker"
-            );
-            return false;
-        }
-
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                name,
-                "--exact",
-                "--nocapture",
-                "--format=pretty",
-                "--color=never",
-                "--test-threads=1",
-            ])
-            .env(CHILD_MARKER, name)
-            .output()
-            .expect("start isolated request-id test");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let named_test_passed = stdout
-            .lines()
-            .any(|line| line == format!("test {name} ... ok"));
-        let exactly_one_passed = stdout
-            .lines()
-            .any(|line| line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;"));
-        assert!(
-            output.status.success() && named_test_passed && exactly_one_passed,
-            "isolated test {name} did not run exactly once and pass ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
-            output.status,
-        );
-        true
-    }
-
     /// Records the `request_id` of each `http.request` span as it is created,
     /// and whether the marker event from the test handler was emitted inside
     /// such a span.
@@ -635,20 +584,18 @@ mod tests {
 
     #[tokio::test]
     async fn request_id_middleware_opens_a_span_around_the_handler() {
-        if run_isolated_request_id_test(
+        if sekisho_test_support::run_in_child(
             "audit::tests::request_id_middleware_opens_a_span_around_the_handler",
         ) {
             return;
         }
         use tower::ServiceExt;
         use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
 
         let supplied = "0190e5e5-3a8b-7c01-9d4f-12345678abcd";
         let probe = RequestSpanProbe::default();
-        let _guard = tracing_subscriber::registry()
-            .with(probe.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(probe.clone()));
         let app = axum::Router::new()
             .route(
                 "/",
@@ -697,7 +644,6 @@ mod tests {
     use crate::session::manager::SessionManager;
     use crate::store::Store;
     use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
 
     async fn fresh_store() -> Store {
         Store::new_for_test("sqlite::memory:", [0x41u8; 32], None)
@@ -743,7 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_id_survives_production_log_level_filters() {
-        if run_isolated_request_id_test(
+        if sekisho_test_support::run_in_child(
             "audit::tests::request_id_survives_production_log_level_filters",
         ) {
             return;
@@ -762,14 +708,15 @@ mod tests {
         ] {
             let buffer = JsonLogBuffer::default();
             let writer = buffer.clone();
-            let guard = tracing_subscriber::fmt()
-                .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-                .json()
-                .with_current_span(false)
-                .with_span_list(true)
-                .with_writer(move || writer.clone())
-                .finish()
-                .set_default();
+            let guard = sekisho_test_support::set_default(
+                tracing_subscriber::fmt()
+                    .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+                    .json()
+                    .with_current_span(false)
+                    .with_span_list(true)
+                    .with_writer(move || writer.clone())
+                    .finish(),
+            );
             let app = axum::Router::new()
                 .route(
                     "/",
@@ -819,7 +766,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_id_target_opt_out_removes_json_span_context() {
-        if run_isolated_request_id_test(
+        if sekisho_test_support::run_in_child(
             "audit::tests::request_id_target_opt_out_removes_json_span_context",
         ) {
             return;
@@ -830,14 +777,15 @@ mod tests {
         {
             let buffer = JsonLogBuffer::default();
             let writer = buffer.clone();
-            let _guard = tracing_subscriber::fmt()
-                .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-                .json()
-                .with_current_span(false)
-                .with_span_list(true)
-                .with_writer(move || writer.clone())
-                .finish()
-                .set_default();
+            let _guard = sekisho_test_support::set_default(
+                tracing_subscriber::fmt()
+                    .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+                    .json()
+                    .with_current_span(false)
+                    .with_span_list(true)
+                    .with_writer(move || writer.clone())
+                    .finish(),
+            );
             let app = axum::Router::new()
                 .route(
                     "/",
@@ -932,7 +880,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_id_real_routers_include_handler_events_in_production_json_span_list() {
-        if run_isolated_request_id_test(
+        if sekisho_test_support::run_in_child(
             "audit::tests::request_id_real_routers_include_handler_events_in_production_json_span_list",
         ) {
             return;
@@ -945,14 +893,15 @@ mod tests {
         // Same formatter options as the daemon's JSON log format in
         // `runtime.rs` (no current-span object, span list on). The assertion
         // on `spans` is only meaningful while the two agree.
-        let _guard = tracing_subscriber::fmt()
-            .json()
-            .with_current_span(false)
-            .with_span_list(true)
-            .with_max_level(tracing::Level::DEBUG)
-            .with_writer(move || writer.clone())
-            .finish()
-            .set_default();
+        let _guard = sekisho_test_support::set_default(
+            tracing_subscriber::fmt()
+                .json()
+                .with_current_span(false)
+                .with_span_list(true)
+                .with_max_level(tracing::Level::DEBUG)
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
         let supplied = "0190e5e5-3a8b-7c01-9d4f-12345678abcd";
         let response = management
             .oneshot(
@@ -1047,10 +996,14 @@ mod tests {
 
     #[tokio::test]
     async fn session_create_and_revoke_emit_audit_events() {
+        if sekisho_test_support::run_in_child(
+            "audit::tests::session_create_and_revoke_emit_audit_events",
+        ) {
+            return;
+        }
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
 
         let store = fresh_store().await;
         // Need a real IdP row so the session FK is satisfiable, even
@@ -1113,6 +1066,10 @@ mod tests {
 
     #[tokio::test]
     async fn mgmt_create_emits_attribution_fields() {
+        if sekisho_test_support::run_in_child("audit::tests::mgmt_create_emits_attribution_fields")
+        {
+            return;
+        }
         // The mgmt CRUD events are the audit core. Driving
         // a full axum router would need extra deps, but we can verify
         // the contract a different way: emit the same shape the
@@ -1121,9 +1078,8 @@ mod tests {
         // forgets `actor_type` / `actor_id` / `target_id`, this test
         // catches it.
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let actor = Actor {
             kind: ActorKind::ApiKey,
             id: "sks_TEST".into(),
@@ -1161,10 +1117,14 @@ mod tests {
 
     #[tokio::test]
     async fn audit_mgmt_macro_emits_full_attribution_with_target() {
+        if sekisho_test_support::run_in_child(
+            "audit::tests::audit_mgmt_macro_emits_full_attribution_with_target",
+        ) {
+            return;
+        }
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let actor = Actor {
             kind: ActorKind::ApiKey,
             id: "sks_M".into(),
@@ -1194,14 +1154,18 @@ mod tests {
 
     #[tokio::test]
     async fn audit_mgmt_macro_omits_target_id_when_absent() {
+        if sekisho_test_support::run_in_child(
+            "audit::tests::audit_mgmt_macro_omits_target_id_when_absent",
+        ) {
+            return;
+        }
         // The no-target arm is used by config.update / instance.update /
         // mgmt_cert.upload — singletons that don't have an id. The macro
         // must not synthesise a stray empty `target_id` field, otherwise
         // operators would have to special-case parsing.
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let actor = Actor {
             kind: ActorKind::MgmtSession,
             id: "mgmt_X".into(),
@@ -1228,10 +1192,14 @@ mod tests {
 
     #[tokio::test]
     async fn audit_crypto_macro_emits_warn_level_with_crypto_category() {
+        if sekisho_test_support::run_in_child(
+            "audit::tests::audit_crypto_macro_emits_warn_level_with_crypto_category",
+        ) {
+            return;
+        }
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let actor = Actor {
             kind: ActorKind::ApiKey,
             id: "sks_C".into(),

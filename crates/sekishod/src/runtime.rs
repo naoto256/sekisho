@@ -1641,25 +1641,9 @@ mod tests {
 
     #[test]
     fn hardening_acme_logs_contain_only_token_length() {
-        const NAME: &str = "runtime::tests::hardening_acme_logs_contain_only_token_length";
-        const CHILD: &str = "SEKISHO_ACME_LOG_TEST_CHILD";
-        // Runs alone in a child process: `tracing` caches callsite `Interest`
-        // once per process, so the subscriber installed below would otherwise
-        // share that cache with every other test in this binary.
-        if std::env::var(CHILD).as_deref() != Ok(NAME) {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", NAME, "--nocapture"])
-                .env(CHILD, NAME)
-                .output()
-                .unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                output.status.success()
-                    && stdout.contains(&format!("test {NAME} ... ok"))
-                    && stdout.contains("1 passed; 0 failed; 0 ignored"),
-                "{stdout}\n{stderr}"
-            );
+        if sekisho_test_support::run_in_child(
+            "runtime::tests::hardening_acme_logs_contain_only_token_length",
+        ) {
             return;
         }
         #[derive(Clone, Default)]
@@ -1673,15 +1657,15 @@ mod tests {
                 Ok(())
             }
         }
-        use tracing_subscriber::util::SubscriberInitExt;
         let buffer = Buffer::default();
         let writer = buffer.clone();
-        let _guard = tracing_subscriber::fmt()
-            .json()
-            .with_max_level(tracing::Level::DEBUG)
-            .with_writer(move || writer.clone())
-            .finish()
-            .set_default();
+        let _guard = sekisho_test_support::set_default(
+            tracing_subscriber::fmt()
+                .json()
+                .with_max_level(tracing::Level::DEBUG)
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2136,6 +2120,11 @@ mod tests {
 
     #[tokio::test]
     async fn listener_abort_completes_before_drain_audit() {
+        if sekisho_test_support::run_in_child(
+            "runtime::tests::listener_abort_completes_before_drain_audit",
+        ) {
+            return;
+        }
         struct DropFlag {
             dropped: Arc<AtomicBool>,
             audit_observed_at_drop: Arc<AtomicBool>,
@@ -2153,9 +2142,8 @@ mod tests {
         }
 
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let dropped = Arc::new(AtomicBool::new(false));
         let audit_observed_at_drop = Arc::new(AtomicBool::new(false));
         let drop_flag = DropFlag {
@@ -2690,10 +2678,14 @@ mod tests {
 
     #[test]
     fn master_key_audit_fields_and_errors_do_not_expose_secret() {
+        if sekisho_test_support::run_in_child(
+            "runtime::tests::master_key_audit_fields_and_errors_do_not_expose_secret",
+        ) {
+            return;
+        }
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let error =
             resolve_master_key_from_file(Some(OsStr::new("/missing/master-key"))).unwrap_err();
 
@@ -2711,10 +2703,14 @@ mod tests {
 
     #[test]
     fn master_key_success_audit_uses_file_source() {
+        if sekisho_test_support::run_in_child(
+            "runtime::tests::master_key_success_audit_uses_file_source",
+        ) {
+            return;
+        }
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let path =
             std::env::temp_dir().join(format!("sekisho-master-key-{}", uuid::Uuid::new_v4()));
         std::fs::write(&path, LOWER_MASTER_KEY).unwrap();
@@ -2730,10 +2726,14 @@ mod tests {
 
     #[test]
     fn master_key_wrong_length_has_auditable_reason_without_secret() {
+        if sekisho_test_support::run_in_child(
+            "runtime::tests::master_key_wrong_length_has_auditable_reason_without_secret",
+        ) {
+            return;
+        }
         let capture = AuditCapture::new();
-        let _guard = tracing_subscriber::registry()
-            .with(capture.clone())
-            .set_default();
+        let _guard =
+            sekisho_test_support::set_default(tracing_subscriber::registry().with(capture.clone()));
         let path =
             std::env::temp_dir().join(format!("sekisho-master-key-{}", uuid::Uuid::new_v4()));
         std::fs::write(&path, "0123").unwrap();
